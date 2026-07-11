@@ -11,6 +11,7 @@
 (import (chezscheme) (match) (util))
 
 (include "src/parse.ss")
+(include "src/passes/expand.ss")
 (include "src/passes/recognize-let.ss")
 (include "src/passes/convert-assignments.ss")
 (include "src/passes/convert-closures.ss")
@@ -37,14 +38,15 @@
 (define (compile-file src ll dump?)
   (reset-counter!)
   (let* ([top   (collect-toplevel (read-program src))]
-         [core  (rename-program (parse-program top))]
+         [expd  (expand top)]
+         [core  (rename-program (parse-program expd))]
          [a     (recognize-let core)]
          [b     (convert-assignments a)]
          [c     (convert-closures b)]
          [d     (lower-program c)]
          [text  (emit-program d)])
     (when dump?
-      (dump "collect-toplevel" top)
+      (dump "collect-toplevel" top) (dump "expand" expd)
       (dump "parse+rename" core) (dump "recognize-let" a)
       (dump "convert-assignments" b) (dump "convert-closures" c) (dump "lower" d))
     (let ([out (open-output-file ll 'replace)]) (display text out) (close-port out))))
