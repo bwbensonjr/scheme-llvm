@@ -4,8 +4,10 @@ Reference for the LLVM-specific parts of the Scheme → LLVM IR compiler: toolch
 IR conventions this project commits to, the backends, known gotchas, and citations.
 If you are working on codegen, the runtime, or the JIT, read this first.
 
-The compiler is **hosted in Chez Scheme** (bootstrap host) and uses the **nanopass**
-framework for its pass pipeline. For the broader design rationale (why LLVM at all,
+The compiler is **hosted in Chez Scheme** (bootstrap host) and expresses its pass
+pipeline as a sequence of small typed passes (hand-rolled over s-expressions with
+`match` initially, revisiting nanopass if the pass count grows — see `docs/PIPELINE.md`).
+For the broader design rationale (why LLVM at all,
 how it compares to meta-tracing and partial-evaluation approaches), see the project
 design notes. This document assumes that decision is made and covers *how* the LLVM
 layer works here.
@@ -30,7 +32,7 @@ elsewhere. **This file covers the final arrow and everything downstream of it.**
 | Component | Choice | Notes |
 |-----------|--------|-------|
 | Host / bootstrap | Chez Scheme | nanopass's primary host; matches the `akeep/scheme-to-llvm` reference. |
-| Pass framework | nanopass | Expand → core → CPS → closure-convert as a sequence of small typed passes. |
+| Pass framework | hand-rolled `match` (nanopass if pass count grows) | Expand → core → assignment-convert → closure-convert → lambda-lift as a sequence of small typed passes. See `docs/PIPELINE.md`. |
 | LLVM interface (phase 1) | **Textual `.ll` + `clang` / `llc` / `opt`** | No bindings. Emit IR as text, shell out. This is the default. |
 | LLVM interface (phase 2, optional) | LLVM **C API** via Chez FFI (`foreign-procedure`) | Only when an in-process ORC JIT is wanted. |
 | LLVM | 22.x | Pin it. The `.ll` text syntax is relatively stable but not frozen (see Gotchas re: opaque pointers). |
