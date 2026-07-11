@@ -27,6 +27,7 @@ check fact      demos/fact.scm      120
 check length    demos/length.scm    3
 check counter   demos/counter.scm   3
 check countdown demos/countdown.scm 999   # 10M tail iterations in bounded stack
+check toplevel  demos/toplevel.scm  102   # multi-define program (letrec desugar)
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"

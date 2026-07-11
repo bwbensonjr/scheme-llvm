@@ -3,9 +3,10 @@
 ;;; Usage (run from the repo root):
 ;;;   chez --libdirs src --script src/compile.ss SRC.scm [-o OUT] [--dump]
 ;;;
-;;; Reads one top-level expression from SRC.scm, runs the pipeline (dumping the
-;;; IL after each stage to stderr with --dump), emits OUT.ll, and links it with
-;;; the C runtime + libgc into the executable OUT.
+;;; Reads the top-level forms from SRC.scm (a sequence of `define`s and
+;;; expressions), runs the pipeline (dumping the IL after each stage to stderr
+;;; with --dump), emits OUT.ll, and links it with the C runtime + libgc into the
+;;; executable OUT.
 
 (import (chezscheme) (match) (util))
 
@@ -20,8 +21,13 @@
 (define gc-inc "/opt/homebrew/include")
 (define gc-lib "/opt/homebrew/lib")
 
-(define (read-program path)
-  (let* ([p (open-input-file path)] [e (read p)]) (close-port p) e))
+(define (read-program path)   ; -> ordered list of all top-level forms
+  (let ([p (open-input-file path)])
+    (let loop ([forms '()])
+      (let ([e (read p)])
+        (if (eof-object? e)
+            (begin (close-port p) (reverse forms))
+            (loop (cons e forms)))))))
 
 (define (dump stage form)
   (fprintf (current-error-port) ";; ==== after ~a ====\n" stage)
@@ -30,13 +36,15 @@
 
 (define (compile-file src ll dump?)
   (reset-counter!)
-  (let* ([core  (rename-program (parse-program (read-program src)))]
+  (let* ([top   (collect-toplevel (read-program src))]
+         [core  (rename-program (parse-program top))]
          [a     (recognize-let core)]
          [b     (convert-assignments a)]
          [c     (convert-closures b)]
          [d     (lower-program c)]
          [text  (emit-program d)])
     (when dump?
+      (dump "collect-toplevel" top)
       (dump "parse+rename" core) (dump "recognize-let" a)
       (dump "convert-assignments" b) (dump "convert-closures" c) (dump "lower" d))
     (let ([out (open-output-file ll 'replace)]) (display text out) (close-port out))))

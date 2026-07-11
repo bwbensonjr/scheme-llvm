@@ -1,12 +1,4 @@
-# core-language Specification
-
-## Purpose
-
-Defines the M1 core-lambda subset of Scheme that the compiler accepts and the runtime
-guarantees for programs written in it: the supported data types, special forms, and
-primitives, and the requirement that tail calls execute in bounded stack space.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Compile and run the M1 core-lambda subset
 
@@ -51,14 +43,3 @@ single expression (the M1 case) is the one-form instance of this rule.
 - **WHEN** a program consisting of exactly one top-level expression (no `define`) is
   compiled and run
 - **THEN** the executable produces that expression's value, matching M1 behavior
-
-### Requirement: Proper tail calls run in bounded stack
-
-Calls in tail position SHALL be compiled as guaranteed tail calls (`musttail`), so that
-tail-recursive loops execute in constant stack space.
-
-#### Scenario: Deep tail loop does not overflow
-
-- **WHEN** a tail-recursive loop iterating a large number of times (beyond the native
-  stack depth) is compiled and run
-- **THEN** the executable completes and returns the correct result without stack overflow

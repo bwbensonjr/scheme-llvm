@@ -28,6 +28,7 @@
        [(let ,binds . ,body) `(let ,(map parse-bind binds) ,(parse-body body))]
        [(letrec ,binds . ,body) `(letrec ,(map parse-bind binds) ,(parse-body body))]
        [(begin . ,body) (parse-body body)]
+       [(define . ,rest) (error 'parse "'define' is only allowed at the top level" e)]
        [(set! ,x ,rhs) `(set! ,x ,(parse-expr rhs))]
        [(,op . ,args) (guard (prim? op)) `(primcall ,op ,@(map parse-expr args))]
        [(,f . ,args) `(call ,(parse-expr f) ,@(map parse-expr args))])]
@@ -41,6 +42,62 @@
       [(null? es) `(const ())]
       [(null? (cdr es)) (car es)]
       [else `(seq ,(car es) ,(loop (cdr es)))])))
+
+;; ---- collect-toplevel: a program's top-level forms -> one source expr ----
+;; A program is a sequence of top-level forms: any number of (define ...) and
+;; expressions, ending in an expression whose value is the program's value.
+;; This is a source->source pass (its output goes through parse-expr like any
+;; form) and the only place top-level `define` is understood.
+;;
+;; Definitions desugar to bindings over the trailing expression.  The backend's
+;; `letrec` is letrec-*of-lambdas* (convert-closures turns every binding into a
+;; closure), so:
+;;   - all-lambda defines  -> (letrec (...) body)      -- efficient, unchanged
+;;   - value/mixed defines -> (let (placeholders) (set! ...) ... body)
+;;     the classic letrec*->let+set! transform; boxing is handled downstream by
+;;     convert-assignments, so this stays frontend-only.
+(define (define-form? f) (and (pair? f) (eq? (car f) 'define)))
+(define (lambda-init? init) (and (pair? init) (eq? (car init) 'lambda)))
+
+(define (normalize-define f)  ; (define ...) -> (name init-sexpr)
+  (let ([sig (cadr f)] [rest (cddr f)])
+    (cond
+      [(pair? sig)                       ; (define (f arg ...) body ...)
+       (list (car sig) `(lambda ,(cdr sig) ,@rest))]
+      [(symbol? sig)                     ; (define x e)
+       (unless (and (pair? rest) (null? (cdr rest)))
+         (error 'collect-toplevel "malformed (define x e)" f))
+       (list sig (car rest))]
+      [else (error 'collect-toplevel "malformed define" f)])))
+
+(define (seq-forms pre value)  ; non-final exprs + final -> one form
+  (if (null? pre) value `(begin ,@pre ,value)))
+
+(define (build-program binds pre value)
+  (cond
+    [(null? binds) (seq-forms pre value)]
+    [(andmap (lambda (b) (lambda-init? (cadr b))) binds)
+     `(letrec ,binds ,(seq-forms pre value))]
+    [else
+     `(let ,(map (lambda (b) (list (car b) '(quote ()))) binds)
+        ,@(map (lambda (b) `(set! ,(car b) ,(cadr b))) binds)
+        ,@pre
+        ,value)]))
+
+(define (collect-toplevel forms)
+  (when (null? forms)
+    (error 'collect-toplevel "empty program: no top-level forms"))
+  (let loop ([fs forms] [binds '()] [pre '()])
+    (cond
+      [(null? fs)
+       (error 'collect-toplevel
+              "program must end in an expression, not a definition")]
+      [(define-form? (car fs))
+       (loop (cdr fs) (cons (normalize-define (car fs)) binds) pre)]
+      [(null? (cdr fs))                  ; final form = the program's value
+       (build-program (reverse binds) (reverse pre) (car fs))]
+      [else                              ; a non-final top-level expression
+       (loop (cdr fs) binds (cons (car fs) pre))])))
 
 ;; ---- alpha-rename: make every bound variable globally unique ----
 (define (rename-program e) (rename e '()))
