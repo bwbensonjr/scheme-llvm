@@ -60,6 +60,20 @@ check arity-trap-survives --no-prelude "$(printf '#<procedure>\n!trap: arity err
 (f 9)
 EOF
 
+# spec: forward references are rejected (a referenced to b before b exists),
+# and the session recovers so later forms work
+check forward-ref-rejected --no-prelude "$(printf '10\n11')" <<'EOF'
+(define a (+ b 1))
+(define b 10)
+(+ b 1)
+EOF
+
+# spec: interned symbols stay eq? across forms (shared symbol table)
+check symbol-eq-persist --no-prelude "$(printf 'foo\n#t')" <<'EOF'
+(define s (quote foo))
+(eq? s (quote foo))
+EOF
+
 # --- with prelude: macros, library, user macros, the in-language reader ---
 check cond-macro "" "$(printf '#<procedure>\nneg\npos')" <<'EOF'
 (define (classify n) (cond ((< n 0) (quote neg)) (else (quote pos))))
@@ -81,6 +95,14 @@ EOF
 check in-language-reader "" "$(printf '(a (b c) 42)')" <<'EOF'
 (read-from-string "(a (b c) 42)")
 EOF
+
+# spec: end-of-input ends the session cleanly (exit code 0)
+printf '(+ 1 2)\n' | chez --libdirs src --script src/compile.ss --repl --no-prelude >/dev/null 2>&1
+if [ "$?" -eq 0 ]; then
+  echo "  [OK  ] eof-clean-exit"; pass=$((pass+1))
+else
+  echo "  [FAIL] eof-clean-exit (nonzero exit on EOF)"; fail=$((fail+1))
+fi
 
 echo
 echo "  $pass passed, $fail failed"

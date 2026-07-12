@@ -36,7 +36,7 @@
 
 ## 6. Verification and regression
 
-- [ ] 6.1 Add REPL scenario tests covering the `interactive-repl` spec: later-form-sees-earlier-define, redefinition, forward-reference rejection, heap-value survival, and symbol `eq?` persistence across forms.
-- [ ] 6.2 Add a backends equivalence check: a scripted form sequence in the REPL yields the same final value as the batch/whole-program build of the same forms.
-- [ ] 6.3 Confirm AOT, bitcode, and batch `lli` exits and the existing demo suite are unaffected.
-- [ ] 6.4 Update `README.md` with REPL usage.
+- [x] 6.1 REPL scenario tests covering the `interactive-repl` spec (`test/repl-interactive-tests.sh`, 12 cases): later-form-sees-earlier-define, redefinition, forward-reference rejection, heap-value survival, symbol `eq?` persistence, arity-trap survival, macros/library, user `define-syntax`, in-language reader, and clean EOF exit.
+- [x] 6.2 Backends equivalence check (`test/repl-equiv-tests.sh`, 14 programs): the REPL's final-form value equals the whole-program batch (AOT) value. (`toplevel` is excluded and documented — it uses mutual top-level recursion, which the REPL rejects by design.)
+- [x] 6.3 Confirmed AOT, bitcode, and `lli` exits and the demo suite are unaffected: `demos/run-tests.sh` (34) and `demos/run-backends.sh` (34 × 3 backends, byte-identical) both green.
+- [x] 6.4 Updated `README.md` with REPL usage, the interactive-REPL summary, the test-harness list, and the self-hosting/exploration pointer.

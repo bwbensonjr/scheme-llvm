@@ -5,9 +5,11 @@ Experiment with compiling Scheme into LLVM IR.
 A **Chez-hosted Scheme→LLVM compiler**: a hand-rolled frontend pipeline that emits textual
 LLVM IR, a small C runtime under Boehm GC, and **three backends** (AOT, JIT, bitcode) that
 are checked to agree byte-for-byte. **34 demos pass, all three backends in agreement.**
-The compiler is written in Scheme (bootstrapped with Chez), with an eventual self-hosting
-goal, and prioritizes simple, transparent stages (see `CLAUDE.md`). Development is
-OpenSpec-driven — 14 changes shipped so far, tracked under `openspec/`.
+There is also an **interactive REPL** on a persistent LLVM ORC/LLJIT host (`--repl`), where
+each form is JIT-compiled into a long-lived session. The compiler is written in Scheme
+(bootstrapped with Chez), with an eventual self-hosting goal, and prioritizes simple,
+transparent stages (see `CLAUDE.md`). Development is OpenSpec-driven, tracked under
+`openspec/`.
 
 ## Quick start
 
@@ -24,10 +26,29 @@ chez --libdirs src --script src/compile.ss demos/fact.scm --backend bitcode -o /
 chez --libdirs src --script src/compile.ss demos/fact.scm --dump          # print IL after each pass
 chez --libdirs src --script src/compile.ss demos/fact.scm --no-prelude
 
+# interactive REPL (persistent ORC/LLJIT host; builds build/repl-host on first use)
+chez --libdirs src --script src/compile.ss --repl
+#   scheme> (define (sq n) (* n n))
+#   scheme> (sq 9)   => 81
+
 # test harnesses
-demos/run-tests.sh        # compile+run every demo, compare to expected values
-demos/run-backends.sh     # assert AOT = JIT = bitcode for each demo
+demos/run-tests.sh              # compile+run every demo, compare to expected values
+demos/run-backends.sh           # assert AOT = JIT = bitcode for each demo
+test/repl-frontend.ss           # REPL front-end unit tests (chez --script)
+test/repl-host-tests.sh         # persistent host, end-to-end
+test/repl-interactive-tests.sh  # interactive `--repl`, end-to-end
+test/repl-equiv-tests.sh        # REPL final value == batch build value
 ```
+
+### Interactive REPL
+
+`--repl` runs a read-eval-print loop backed by a **persistent LLVM ORC/LLJIT host**
+(`src/repl/host.cpp`, built via `src/repl/build-host.sh`). Each entered form is compiled to
+its own module and added to a long-lived JIT in which the GC heap, symbol table, and runtime
+stay alive, so definitions, closures, and heap values persist across forms and top-level
+names can be redefined. It needs the LLVM 22 development install (headers + `llvm-config`,
+from the same `llvm@22` keg). References resolve to earlier forms only — mutual top-level
+recursion (which the whole-program batch letrec supports) is not available interactively.
 
 ## Layout
 
@@ -84,6 +105,11 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 
 **Backends & process**
 - AOT / JIT / bitcode from one emitted `.ll`, with a 3-way equivalence harness.
+- **Interactive REPL** (`--repl`) on a persistent LLVM ORC/LLJIT host: per-form modules
+  added to a long-lived JIT with a shared GC heap / symbol table / runtime, so definitions,
+  closures, heap values, and redefinition persist across forms; runtime traps (arity errors)
+  are isolated so the session survives. A REPL-vs-batch equivalence harness checks the two
+  agree on final values.
 - OpenSpec-driven changes; decisions (framework, calling convention) backed by spikes.
 
 ## Not yet done
@@ -104,12 +130,15 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 - **Control**: `call/cc`, `values`/`call-with-values`, exceptions/`guard`, `dynamic-wind`.
 - **Data**: vectors, bytevectors, hash tables, records.
 - **I/O**: ports, files, `read` from stdin, `display`/`write` as procedures.
-- Recoverable error handling (arity errors currently abort).
+- Recoverable error handling: arity errors are isolated in the REPL host (the session
+  survives) but still abort the standalone AOT/JIT executables; no general condition system.
 
 **Self-hosting (the north star)**
 - The compiler is still Chez-hosted and uses the host `read`. The concrete path: swap host
   `read` for the Scheme `read-from-string`, then port the passes to run within the compiled
-  subset — what the recent data-type / prelude / reader changes were building toward.
+  subset — what the recent data-type / prelude / reader changes were building toward. The
+  REPL's execution host is already Chez-free; see `openspec/explorations/chez-free-repl.md`
+  for the roadmap (the gap is the compiler front end).
 
 **Performance / cleanup (deferred by design)**
 - No dead-code elimination (the whole prelude is emitted into every program); O(n)
