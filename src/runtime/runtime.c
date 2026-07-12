@@ -77,9 +77,10 @@ val rt_lt(val a, val b)     { return truthy(UNFIX(a) <  UNFIX(b)); }
 val rt_null_p(val v)       { return truthy(v == NIL_V); }
 val rt_pair_p(val v)       { return truthy(tag_of(v) == TAG_PAIR); }
 val rt_eq_p(val a, val b)  { return truthy(a == b); }
-/* eqv?: same-object identity.  == suffices while every value eqv? can
- * distinguish is immediate (fixnums, chars) or interned (symbols); this
- * diverges from rt_eq_p only once non-immediate numbers (flonums/bignums) exist. */
+/* eqv?: same-object identity.  == suffices because every value eqv? can
+ * distinguish is immediate (fixnums), interned (symbols), or interned by
+ * codepoint (characters, see rt_make_char); this diverges from rt_eq_p only
+ * once non-immediate numbers (flonums/bignums) need value comparison. */
 val rt_eqv_p(val a, val b) { return truthy(a == b); }
 val rt_not(val x)          { return truthy(x == FALSE_V); }  /* only #f is false */
 
@@ -182,12 +183,53 @@ static intptr_t    str_len(val v)   { return as_ptr(v)[1]; }
 static const char *str_bytes(val v) { return (const char *)as_ptr(v)[2]; }
 
 /* char: { HDR_CHAR, codepoint } -- the full Unicode scalar value */
+static intptr_t char_cp(val v) { return as_ptr(v)[1]; }
+
+/* Characters are interned by codepoint so equal chars are the same object
+ * (eq?/eqv? hold), mirroring symbol interning.  Two tiers: a direct Latin-1
+ * array for 0..255 (the common case, O(1)) and a growable linear-scan table for
+ * codepoints >= 256.  Both are GC_MALLOC_UNCOLLECTABLE and scanned, so interned
+ * chars are roots that survive collection under the lli JIT (see rt_intern for
+ * why a plain static pointer is not enough). */
+static val *char_latin1 = NULL;          /* [256], lazily allocated, zero = absent */
+static val *char_astral = NULL;          /* codepoints >= 256 */
+static intptr_t char_astral_count = 0;
+static intptr_t char_astral_cap = 0;
+
+static val char_lookup(intptr_t cp) {
+  if (cp < 256) return char_latin1 ? char_latin1[cp] : 0;
+  for (intptr_t i = 0; i < char_astral_count; i++)
+    if (char_cp(char_astral[i]) == cp) return char_astral[i];
+  return 0;
+}
+
+static void char_intern_add(val ch, intptr_t cp) {
+  if (cp < 256) {
+    if (!char_latin1)
+      char_latin1 = (val *)GC_MALLOC_UNCOLLECTABLE(256 * sizeof(val));
+    char_latin1[cp] = ch;
+    return;
+  }
+  if (char_astral_count == char_astral_cap) {
+    intptr_t ncap = char_astral_cap ? char_astral_cap * 2 : 16;
+    val *nt = (val *)GC_MALLOC_UNCOLLECTABLE((size_t)ncap * sizeof(val));
+    for (intptr_t i = 0; i < char_astral_count; i++) nt[i] = char_astral[i];
+    if (char_astral) GC_free(char_astral);
+    char_astral = nt;
+    char_astral_cap = ncap;
+  }
+  char_astral[char_astral_count++] = ch;
+}
+
 val rt_make_char(intptr_t codepoint) {
+  val c = char_lookup(codepoint);
+  if (c) return c;                          /* canonical char already interned */
   val *p = (val *)GC_MALLOC(2 * sizeof(val));
   p[0] = HDR_CHAR; p[1] = codepoint;
-  return tag_ptr(p, TAG_EXT);
+  val ch = tag_ptr(p, TAG_EXT);
+  char_intern_add(ch, codepoint);
+  return ch;
 }
-static intptr_t char_cp(val v) { return as_ptr(v)[1]; }
 
 /* encode a Unicode codepoint as UTF-8 into buf (>= 4 bytes); return byte count */
 static int utf8_encode(intptr_t cp, unsigned char *buf) {

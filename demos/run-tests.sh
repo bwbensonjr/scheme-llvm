@@ -46,6 +46,7 @@ check namedloop demos/named-let-loop.scm 42  # named-let tail loop, bounded stac
 check naryarith demos/nary-arith.scm 43  # n-ary + - *, unary negation, identities
 check narycmp   demos/nary-compare.scm 11111101  # n-ary/chained < = > <= >=, single-eval
 check eqnot     demos/eq-not.scm 1100110101  # n-ary eq?/eqv? + not primitive
+check charintern demos/char-intern.scm 1101111  # interned chars: eq?/eqv? + survive GC
 
 echo "variadic / apply demos"
 check varrest  demos/variadic-rest.scm "(3 4)"   # dotted rest parameter
