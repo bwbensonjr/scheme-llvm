@@ -38,6 +38,7 @@ using namespace llvm::orc;
 extern "C" {
   void rt_write(intptr_t v);   // runtime value printer (linked into this host)
   extern jmp_buf *rt_trap;     // runtime trap escape hook (see runtime.c)
+  extern char rt_trap_msg[];   // last trap's message
 }
 
 typedef intptr_t (*thunk_t)(void);
@@ -81,7 +82,7 @@ static void handle_form(const std::string &name, std::string ir) {
     std::printf("\n");
     std::fflush(stdout);
   } else {
-    std::cout << "!trap\n" << std::flush;   // detail already on stderr
+    std::cout << "!trap: " << rt_trap_msg << "\n" << std::flush;
   }
   rt_trap = nullptr;
 }
@@ -93,9 +94,12 @@ int main() {
   InitializeNativeTargetAsmPrinter();
   InitializeNativeTargetAsmParser();
 
+  // The parent (Chez `process`) merges our stderr into the result pipe, so keep
+  // all framed output on stdout and report fatal startup errors there too.
   auto jitOr = LLJITBuilder().create();
   if (!jitOr) {
-    errs() << "failed to create LLJIT: " << toString(jitOr.takeError()) << "\n";
+    std::cout << "!fatal: failed to create LLJIT: " << toString(jitOr.takeError())
+              << "\n" << std::flush;
     return 1;
   }
   JIT = std::move(*jitOr);
@@ -105,7 +109,8 @@ int main() {
   auto gen = DynamicLibrarySearchGenerator::GetForCurrentProcess(
       JIT->getDataLayout().getGlobalPrefix());
   if (!gen) {
-    errs() << "generator error: " << toString(gen.takeError()) << "\n";
+    std::cout << "!fatal: generator error: " << toString(gen.takeError())
+              << "\n" << std::flush;
     return 1;
   }
   JIT->getMainJITDylib().addGenerator(std::move(*gen));

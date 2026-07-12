@@ -200,19 +200,32 @@
 ;; lambda definition registers its new symbol BEFORE its init is resolved, so a
 ;; self-reference recurses into the new binding; a value definition registers
 ;; AFTER, so its init sees the previous binding (e.g. (define x (+ x 1))).
-(define (repl-lower-form env form)
+;; register? #t (interactive): a define allocates a fresh generation, and a
+;; value init is resolved BEFORE the new symbol exists (so it reads the previous
+;; binding).  register? #f (group load, e.g. the prelude): the name was already
+;; pre-registered by `repl-register-define!`, so its current symbol is reused and
+;; all sibling names in the group are visible to every body -- letrec* semantics.
+(define (repl-lower-form* env form register?)
   (define (prep sexp) (resolve-globals (rename-program (parse-program sexp)) env))
   (cond
     [(define-form? form)
      (let* ([nd   (normalize-define form)]
             [name (car nd)]
             [init (cadr nd)])
-       (if (lambda-init? init)
-           (let ([sym (repl-env-define! env name)])
-             `(global-set! ,sym ,(prep init)))
-           (let ([init-il (prep init)])
-             `(global-set! ,(repl-env-define! env name) ,init-il))))]
+       (cond
+         [(not register?) `(global-set! ,(repl-env-lookup env name) ,(prep init))]
+         [(lambda-init? init)
+          (let ([sym (repl-env-define! env name)]) `(global-set! ,sym ,(prep init)))]
+         [else
+          (let ([init-il (prep init)]) `(global-set! ,(repl-env-define! env name) ,init-il))]))]
     [else (prep form)]))
+
+(define (repl-lower-form env form) (repl-lower-form* env form #t))
+
+;; Pre-register a define's name without lowering it (group-load phase 1), so a
+;; group of mutually recursive top-level defines can all see one another.
+(define (repl-register-define! env form)
+  (repl-env-define! env (car (normalize-define form))))
 
 ;; ---- alpha-rename: make every bound variable globally unique ----
 (define (rename-program e) (rename e '()))

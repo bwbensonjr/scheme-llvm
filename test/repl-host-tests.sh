@@ -68,7 +68,7 @@ check symbol-eq-persist "$(printf 'a\nb\n#t')" <<'EOF'
 (eq? (quote a) s)
 EOF
 
-check trap-isolation "$(printf '#<procedure>\n25\n!trap\n81')" <<'EOF'
+check trap-isolation "$(printf '#<procedure>\n25\n!trap: arity error: expected 1 argument(s), got 2\n81')" <<'EOF'
 (define (f n) (* n n))
 (f 5)
 (f 1 2)

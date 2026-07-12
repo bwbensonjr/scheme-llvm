@@ -153,32 +153,151 @@
              (cond [(< i 0) #f] [(char=? (string-ref s i) #\.) i] [else (loop (- i 1))]))])
     (if i (substring s 0 i) s)))
 
+;; --- interactive REPL over the persistent ORC/LLJIT host ----------------
+;; Drives build/repl-host as a co-process: read a form, run it through the same
+;; expander/lowering/emit as batch (but one form at a time, against a persistent
+;; REPL env + growing macro env), frame the module, send it, and print the value
+;; the host returns.  A form that fails to compile is reported and dropped, with
+;; all session state rolled back so the next form is unaffected.
+(define repl-host-path "build/repl-host")
+
+(define (ensure-host)
+  (unless (file-exists? repl-host-path)
+    (fprintf (current-error-port) "building REPL host (src/repl/build-host.sh)...\n")
+    (unless (zero? (system "src/repl/build-host.sh"))
+      (error 'repl "failed to build the REPL host"))))
+
+(define (repl-frame text name)          ; host wire frame: "<name> <bytes>\n<ir>"
+  (string-append name " "
+                 (number->string (bytevector-length (string->utf8 text))) "\n"
+                 text))
+
+(define (condition->string e)
+  (with-output-to-string (lambda () (display-condition e))))
+
+;; lower one core-IL expression through the shared back half of the pipeline.
+(define (repl-lcode il)
+  (lower-program (convert-closures (convert-assignments (recognize-let il)))))
+
+(define (run-repl prelude?)
+  (ensure-host)
+  (reset-counter!)
+  ;; Chez `process` merges the child's stderr into the stdout pipe, which would
+  ;; desync our line-per-result framing; send the host's stderr to /dev/null (it
+  ;; reports trap detail on stdout via rt_trap_msg instead).
+  (let* ([pipes (process (string-append repl-host-path " 2>/dev/null"))]
+         [from  (car pipes)]
+         [to    (cadr pipes)]
+         [err   (current-error-port)]
+         [env   (make-repl-env)])
+    (let ([macro-env '()]
+          [known (union* (list *core-keywords* *prims* *extra-op-keywords*))]
+          [n 0])
+      (define (send-frame! text name)   ; -> the host's one-line result
+        (put-string to (repl-frame text name))
+        (flush-output-port to)
+        (get-line from))
+      (define (note-syntax! form)       ; register a define-syntax in the session
+        (set! macro-env (cons (parse-define-syntax form) macro-env))
+        (set! known (cons (cadr form) known)))
+      ;; expand a define's INIT (not its raw signature -- expanding the raw form
+      ;; would treat a dotted param list like `(f . xs)` as an application), then
+      ;; rebuild a simple `(define name expanded-init)`; expand any other form
+      ;; whole.
+      (define (expand-form form)
+        (if (define-form? form)
+            (let ([nd (normalize-define form)])
+              `(define ,(car nd) ,(expand (cadr nd) macro-env known)))
+            (expand form macro-env known)))
+      ;; process one interactive form; snapshot + roll back all session state on
+      ;; a compile error so a bad form never corrupts the session.
+      (define (feed form)
+        (let ([s0 (vector-ref env 0)] [s1 (vector-ref env 1)]
+              [sme macro-env] [sk known] [sn n])
+          (guard (e (#t (vector-set! env 0 s0) (vector-set! env 1 s1)
+                        (set! macro-env sme) (set! known sk) (set! n sn)
+                        (fprintf err "error: ~a\n" (condition->string e))))
+            (cond
+              [(define-syntax-form? form)
+               (note-syntax! form)
+               (fprintf err ";; syntax ~a\n" (cadr form))]
+              [else
+               (let ([dn (define-name form)])
+                 (when dn (set! known (cons dn known)))
+                 (let ([lc (repl-lcode (repl-lower-form env (expand-form form)))])
+                   (let-values ([(text name defd) (emit-repl-module lc (+ n 1))])
+                     (set! n (+ n 1))
+                     (let ([result (send-frame! text name)])
+                       (when (eof-object? result)
+                         (fprintf err "host terminated unexpectedly\n") (exit 1))
+                       (display result) (newline)
+                       (flush-output-port (current-output-port))))))]))))
+      ;; Load the standard library as ONE mutually-recursive group: collect its
+      ;; macros, pre-register every define name (so forward/mutual references
+      ;; resolve), lower each body reusing those symbols, and emit a single
+      ;; combined module (emit-repl-batch) whose globals later forms resolve
+      ;; against.  A single module is required: splitting a recursive group into
+      ;; per-form modules would reference a slot before its defining module was
+      ;; added to the JIT.
+      (define (load-prelude!)
+        (let ([forms (read-program prelude-path)])
+          (for-each
+            (lambda (f)
+              (cond [(define-syntax-form? f) (note-syntax! f)]
+                    [(define-form? f)
+                     (set! known (cons (define-name f) known))
+                     (repl-register-define! env f)]))
+            forms)
+          (let ([progs (fold-left
+                         (lambda (acc f)
+                           (if (define-form? f)
+                               (cons (repl-lcode (repl-lower-form* env (expand-form f) #f)) acc)
+                               acc))
+                         '() forms)])
+            (send-frame! (emit-repl-batch (reverse progs)) "scheme_entry")
+            ;; the combined module used @__repl_1..N internally; start interactive
+            ;; thunks above that range so their names don't collide in the JIT.
+            (set! n (length progs)))))
+      (when prelude? (load-prelude!))
+      (fprintf err "scheme-llvm REPL (persistent ORC/LLJIT host).  ^D to exit.\n")
+      (let loop ()
+        (fprintf err "scheme> ") (flush-output-port err)
+        (let ([form (read)])
+          (if (eof-object? form)
+              (begin (fprintf err "\n") (close-port to) (exit 0))
+              (begin (feed form) (loop))))))))
+
 ;; --- argument handling ---
 (define (main args)
-  (let loop ([args args] [src #f] [out #f] [dump? #f] [backend "aot"] [prelude? #t])
+  (let loop ([args args] [src #f] [out #f] [dump? #f] [backend "aot"] [prelude? #t]
+             [repl? #f])
     (cond
       [(null? args)
-       (unless src (error 'compile "usage: compile.ss SRC.scm [-o OUT] [--dump] [--backend aot|jit|bitcode] [--no-prelude]"))
-       (let* ([out (or out (strip-ext src))] [ll (string-append out ".ll")])
-         (compile-file src ll dump? prelude?)
-         (case (string->symbol backend)
-           [(aot)
-            (link ll out)
-            (fprintf (current-error-port) "wrote ~a and ~a\n" ll out)]
-           [(bitcode)
-            (require-llvm-tools)
-            (let ([bc (string-append out ".bc")])
-              (emit-bitcode ll bc)
-              (build-bitcode-exe bc out)
-              (fprintf (current-error-port) "wrote ~a, ~a and ~a\n" ll bc out))]
-           [(jit)
-            (require-llvm-tools)
-            (run-jit ll out)]
-           [else (error 'compile "unknown backend (want aot|jit|bitcode)" backend)]))]
-      [(string=? (car args) "-o") (loop (cddr args) src (cadr args) dump? backend prelude?)]
-      [(string=? (car args) "--dump") (loop (cdr args) src out #t backend prelude?)]
-      [(string=? (car args) "--backend") (loop (cddr args) src out dump? (cadr args) prelude?)]
-      [(string=? (car args) "--no-prelude") (loop (cdr args) src out dump? backend #f)]
-      [else (loop (cdr args) (car args) out dump? backend prelude?)])))
+       (cond
+         [repl? (run-repl prelude?)]
+         [else
+          (unless src (error 'compile "usage: compile.ss SRC.scm [-o OUT] [--dump] [--backend aot|jit|bitcode] [--no-prelude]\n   or: compile.ss --repl [--no-prelude]"))
+          (let* ([out (or out (strip-ext src))] [ll (string-append out ".ll")])
+            (compile-file src ll dump? prelude?)
+            (case (string->symbol backend)
+              [(aot)
+               (link ll out)
+               (fprintf (current-error-port) "wrote ~a and ~a\n" ll out)]
+              [(bitcode)
+               (require-llvm-tools)
+               (let ([bc (string-append out ".bc")])
+                 (emit-bitcode ll bc)
+                 (build-bitcode-exe bc out)
+                 (fprintf (current-error-port) "wrote ~a, ~a and ~a\n" ll bc out))]
+              [(jit)
+               (require-llvm-tools)
+               (run-jit ll out)]
+              [else (error 'compile "unknown backend (want aot|jit|bitcode)" backend)]))])]
+      [(string=? (car args) "-o") (loop (cddr args) src (cadr args) dump? backend prelude? repl?)]
+      [(string=? (car args) "--dump") (loop (cdr args) src out #t backend prelude? repl?)]
+      [(string=? (car args) "--backend") (loop (cddr args) src out dump? (cadr args) prelude? repl?)]
+      [(string=? (car args) "--no-prelude") (loop (cdr args) src out dump? backend #f repl?)]
+      [(string=? (car args) "--repl") (loop (cdr args) src out dump? backend prelude? #t)]
+      [else (loop (cdr args) (car args) out dump? backend prelude? repl?)])))
 
 (main (command-line-arguments))

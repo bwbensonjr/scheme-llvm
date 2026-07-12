@@ -28,8 +28,11 @@ typedef intptr_t val;
  * in the AOT/batch model.  A persistent host (the ORC/LLJIT REPL) instead sets
  * rt_trap to a jmp_buf and setjmp()s before calling into JIT'd code, so a trap
  * longjmps back to the host loop and the session survives.  NULL => exit(1),
- * preserving the standalone-executable behavior. */
+ * preserving the standalone-executable behavior.  rt_trap_msg holds the last
+ * trap's message so a host can report it on its result channel (the host
+ * silences the runtime's stderr to keep it out of the framed pipe). */
 jmp_buf *rt_trap = NULL;
+char rt_trap_msg[128] = "";
 
 #define TAG_MASK    7
 #define TAG_FIXNUM  0
@@ -129,8 +132,10 @@ val *rt_apply_argv(intptr_t n, val *pre, val lst, intptr_t K) {
 
 /* arity error: report to stderr and abort with a non-zero exit code. */
 void rt_arity_error(intptr_t expected, intptr_t got) {
-  fprintf(stderr, "arity error: expected %ld argument(s), got %ld\n",
-          (long)expected, (long)got);
+  snprintf(rt_trap_msg, sizeof rt_trap_msg,
+           "arity error: expected %ld argument(s), got %ld",
+           (long)expected, (long)got);
+  fprintf(stderr, "%s\n", rt_trap_msg);
   if (rt_trap) longjmp(*rt_trap, 1);
   exit(1);
 }

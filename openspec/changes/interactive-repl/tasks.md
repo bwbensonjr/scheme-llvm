@@ -16,7 +16,7 @@
 
 - [x] 3.1 Add a temporary driver (`test/repl-batch.ss`) that lowers each top-level form as a separate REPL entry and emits one module with `@__repl_1..N` thunks called in order from `@scheme_entry` (`emit-repl-batch`).
 - [x] 3.2 Confirm cross-thunk globals, redefinition, and heap-value reuse (e.g. `(define p (cons 1 2))` then `(car p)`) produce correct values through the AOT and `lli` paths (`test/repl-batch-tests.sh`, 8 cases passing; 34 existing demos still green).
-- [ ] 3.3 Remove/retire the temporary driver once the ORC host (section 4) supersedes it.
+- [x] 3.3 The ORC host supersedes the temporary batch driver for interactive use, but `test/repl-batch.ss` + `test/repl-batch-tests.sh` are **retained** as standalone regression coverage for `emit-repl-batch`, which is now load-bearing (the REPL loads the prelude as one combined `emit-repl-batch` module).
 
 ## 4. Persistent LLVM ORC / LLJIT host
 
@@ -29,10 +29,10 @@
 
 ## 5. REPL driver (Chez) and host transport
 
-- [ ] 5.1 Add a REPL driver that reads one form, runs it through the existing reader/expander/lowering/emit to IR text, and sends it to the host.
-- [ ] 5.2 Implement the Chez↔host transport (length-prefixed IR text over a pipe), including receiving the printed result back.
-- [ ] 5.3 Wire an interactive entry path in `src/compile.ss` (e.g. a `--repl`/`repl` mode) that starts the host and enters the read-eval-print loop; prompt, print, loop.
-- [ ] 5.4 Handle end-of-input by shutting down the host and exiting cleanly.
+- [x] 5.1 REPL driver (`run-repl` in `src/compile.ss`) reads one form, runs it through the expander (per-form macro env + growing known set) and lowering/emit to a per-form module, and sends it to the host. Expands the define *init* (not the raw signature) so dotted/variadic defines don't crash. A bad form is reported and rolled back (all session state snapshotted).
+- [x] 5.2 Chez↔host transport: `"<entry> <byte-count>\n" + IR` frames over the co-process pipe, reading the one-line result back. Host stderr is redirected off the pipe (Chez merges it) and trap detail is carried on stdout via `rt_trap_msg`. EOF from the host is detected.
+- [x] 5.3 `--repl` entry path in `src/compile.ss` starts the host (building it if missing) and runs the prompt/read/print loop. The standard library is loaded as one mutually-recursive group (pre-register names → one combined `emit-repl-batch` module) so the in-language reader and other recursive prelude defs work.
+- [x] 5.4 End-of-input closes the host's stdin and exits cleanly. (`test/repl-interactive-tests.sh`, 9 cases: core model, error recovery, arity-trap survival, cond/map macros, user `define-syntax`, and the in-language `read-from-string`.)
 
 ## 6. Verification and regression
 
