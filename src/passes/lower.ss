@@ -4,7 +4,8 @@
 ;;; explicit heap allocation.  Output "L-code":
 ;;;
 ;;;   (program (code-def ...) entry-expr)
-;;;   code-def = (code label self (param ...) body)   ; self = closure ptr (arg0)
+;;;   code-def = (code label self (fixed ...) rest body)  ; self = closure ptr (arg0)
+;;;             rest = a name (variadic callee) or #f (fixed arity)
 ;;;   expr =
 ;;;     (const d) | (local x) | (free-ref i)
 ;;;     (if e e e) | (seq e e) | (primcall op e ...) | (let ([x e] ...) e)
@@ -60,14 +61,17 @@
                                (map (lambda (v) (lower v locals2 fmap)) fvs)))]))
                   cbinds)])
        `(closure-block ,entries ,(lower body locals2 fmap)))]
+    [(apply ,f . ,args) `(apply-app ,(L f) ,(map L args))]
     [(call ,f . ,args) `(app ,(L f) ,(map L args))]))
 
-;; hoist a lambda body as a top-level code def; its body sees params as locals
-;; and free vars via an index map matching the capture order.
+;; hoist a lambda body as a top-level code def; its body sees params (fixed +
+;; rest) as locals and free vars via an index map matching the capture order.
+;; The code def records the fixed params and the rest name (or #f) so emit can
+;; build the rest list and arity-check.
 (define (hoist-code! label params body fvs)
   (let* ([self (fresh-name 'cp)]
          [fmap (let loop ([fvs fvs] [i 0] [acc '()])
                  (if (null? fvs) (reverse acc)
                      (loop (cdr fvs) (+ i 1) (cons (cons (car fvs) i) acc))))]
-         [lbody (lower body params fmap)])
-    (add-code! `(code ,label ,self ,params ,lbody))))
+         [lbody (lower body (param-names params) fmap)])
+    (add-code! `(code ,label ,self ,(param-fixed params) ,(param-rest params) ,lbody))))

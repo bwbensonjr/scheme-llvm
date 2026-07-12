@@ -11,6 +11,27 @@
 (define *prims* '(+ - * = < cons car cdr null? pair? eq?))
 (define (prim? op) (and (memq op *prims*) #t))
 
+;; ---- variadic parameter lists ----
+;; A lambda's param field may be a proper list (fixed arity), an improper list
+;; (dotted rest `(a b . r)`), or a bare symbol (all-args rest).  These helpers
+;; decompose and rebuild that shape; every pass that touches params uses them so
+;; the three cases are handled uniformly.
+(define (param-fixed p)             ; proper list of the fixed param names
+  (cond [(symbol? p) '()]
+        [(pair? p) (cons (car p) (param-fixed (cdr p)))]
+        [else '()]))                ; null
+(define (param-rest p)              ; the rest name, or #f if fixed arity
+  (cond [(symbol? p) p]
+        [(pair? p) (param-rest (cdr p))]
+        [else #f]))                 ; null
+(define (param-names p)             ; all bound names: fixed ++ (rest if any)
+  (let ([r (param-rest p)])
+    (if r (append (param-fixed p) (list r)) (param-fixed p))))
+(define (rebuild-params fixed rest) ; proper `fixed` + (sym|#f) -> param field
+  (if rest
+      (let loop ([f fixed]) (if (null? f) rest (cons (car f) (loop (cdr f)))))
+      fixed))
+
 ;; ---- parse: s-expr -> core IL ----
 (define (parse-program sexp) (parse-expr sexp))
 
@@ -30,6 +51,10 @@
        [(begin . ,body) (parse-body body)]
        [(define . ,rest) (error 'parse "'define' is only allowed at the top level" e)]
        [(set! ,x ,rhs) `(set! ,x ,(parse-expr rhs))]
+       ;; (apply f a1 ... aN lst): N leading args then a list to spread.  The
+       ;; last operand is the list; there must be at least one operand.
+       [(apply ,f ,a . ,rest)
+        `(apply ,(parse-expr f) ,@(map parse-expr (cons a rest)))]
        [(,op . ,args) (guard (prim? op)) `(primcall ,op ,@(map parse-expr args))]
        [(,f . ,args) `(call ,(parse-expr f) ,@(map parse-expr args))])]
     [else (error 'parse "bad expression" e)]))
@@ -112,11 +137,16 @@
     [(seq ,a ,b) `(seq ,(R a) ,(R b))]
     [(set! ,x ,rhs) `(set! ,(look x) ,(R rhs))]
     [(primcall ,op . ,args) `(primcall ,op ,@(map R args))]
+    [(apply ,f . ,args) `(apply ,(R f) ,@(map R args))]
     [(call ,f . ,args) `(call ,(R f) ,@(map R args))]
-    [(lambda ,params ,body)
-     (let* ([new (map fresh-name params)]
-            [env2 (append (map cons params new) env)])
-       `(lambda ,new ,(rename body env2)))]
+    [(lambda ,params ,body)                        ; params may be variadic
+     (let* ([names (param-names params)]
+            [new   (map fresh-name names)]
+            [amap  (map cons names new)]
+            [env2  (append amap env)]
+            [nfixed (map (lambda (x) (cdr (assq x amap))) (param-fixed params))]
+            [nrest  (let ([r (param-rest params)]) (and r (cdr (assq r amap))))])
+       `(lambda ,(rebuild-params nfixed nrest) ,(rename body env2)))]
     [(let ,binds ,body)
      (let* ([xs (map car binds)]
             [es (map (lambda (b) (R (cadr b))) binds)]     ; rhs in outer env

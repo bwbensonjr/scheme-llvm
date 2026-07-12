@@ -10,7 +10,7 @@
     [(if ,a ,b ,c) (union (fv a) (union (fv b) (fv c)))]
     [(seq ,a ,b) (union (fv a) (fv b))]
     [(primcall ,op . ,args) (union* (map fv args))]
-    [(lambda ,params ,body) (diff (fv body) params)]
+    [(lambda ,params ,body) (diff (fv body) (param-names params))]
     [(let ,binds ,body)
      (union (union* (map (lambda (b) (fv (cadr b))) binds))
             (diff (fv body) (map car binds)))]
@@ -20,6 +20,7 @@
     [(closures ,cbinds ,body)
      (diff (union (union* (map (lambda (b) (fv (caddr b))) cbinds)) (fv body))
            (map car cbinds))]
+    [(apply ,f . ,args) (union (fv f) (union* (map fv args)))]
     [(call ,f . ,args) (union (fv f) (union* (map fv args)))]))
 
 (define (convert-closures e)
@@ -36,4 +37,5 @@
     [(letrec ,binds ,body)
      `(closures ,(map (lambda (b) (list (car b) (free-vars (cadr b)) (cc (cadr b)))) binds)
                 ,(cc body))]
+    [(apply ,f . ,args) `(apply ,(cc f) ,@(map cc args))]
     [(call ,f . ,args) `(call ,(cc f) ,@(map cc args))]))

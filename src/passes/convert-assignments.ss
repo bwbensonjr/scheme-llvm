@@ -20,6 +20,7 @@
     [(lambda ,params ,body) (fa body)]
     [(let ,binds ,body) (union (union* (map (lambda (b) (fa (cadr b))) binds)) (fa body))]
     [(letrec ,binds ,body) (union (union* (map (lambda (b) (fa (cadr b))) binds)) (fa body))]
+    [(apply ,f . ,args) (union (fa f) (union* (map fa args)))]
     [(call ,f . ,args) (union (fa f) (union* (map fa args)))]))
 
 (define (convert-assignments prog)
@@ -46,13 +47,20 @@
       [(if ,a ,b ,c) `(if ,(cvt a) ,(cvt b) ,(cvt c))]
       [(seq ,a ,b) `(seq ,(cvt a) ,(cvt b))]
       [(primcall ,op . ,args) `(primcall ,op ,@(map cvt args))]
-      [(lambda ,params ,body)
-       (let-values ([(nx body^) (rebind params (cvt body))]) `(lambda ,nx ,body^))]
+      [(lambda ,params ,body)                    ; params may be variadic
+       (let ([rest (param-rest params)])
+         (let-values ([(nx body^) (rebind (param-names params) (cvt body))])
+           (if rest
+               (let ([nrest  (list-ref nx (- (length nx) 1))]
+                     [nfixed (list-head nx (- (length nx) 1))])
+                 `(lambda ,(rebuild-params nfixed nrest) ,body^))
+               `(lambda ,nx ,body^))))]
       [(let ,binds ,body)
        (let ([xs (map car binds)] [es (map (lambda (b) (cvt (cadr b))) binds)])
          (let-values ([(nx body^) (rebind xs (cvt body))])
            `(let ,(map list nx es) ,body^)))]
       [(letrec ,binds ,body)
        `(letrec ,(map (lambda (b) (list (car b) (cvt (cadr b)))) binds) ,(cvt body))]
+      [(apply ,f . ,args) `(apply ,(cvt f) ,@(map cvt args))]
       [(call ,f . ,args) `(call ,(cvt f) ,@(map cvt args))]))
   (cvt prog))

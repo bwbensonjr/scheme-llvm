@@ -69,6 +69,48 @@ val rt_null_p(val v)       { return truthy(v == NIL_V); }
 val rt_pair_p(val v)       { return truthy(tag_of(v) == TAG_PAIR); }
 val rt_eq_p(val a, val b)  { return truthy(a == b); }
 
+/* --- variadic / apply support ------------------------------------------ */
+intptr_t rt_list_length(val lst) {
+  intptr_t n = 0;
+  while (tag_of(lst) == TAG_PAIR) { n++; lst = as_ptr(lst)[1]; }
+  return n;
+}
+
+/* Build a variadic callee's rest list: the arguments at indices [fixed, argc)
+ * in order.  Argument i lives in slots[i] when i < K, else in overflow[i-K].
+ * `slots` points at the callee's K positional args spilled to a small array;
+ * `overflow` is the calling-convention overflow vector (only read when
+ * argc > K, so it may be NULL for calls with no excess). */
+val rt_build_rest(intptr_t argc, intptr_t fixed, intptr_t K, val *slots, val *overflow) {
+  val result = NIL_V;
+  for (intptr_t i = argc - 1; i >= fixed; i--) {
+    val a = (i < K) ? slots[i] : overflow[i - K];
+    result = rt_cons(a, result);
+  }
+  return result;
+}
+
+/* apply: flatten n leading args (in `pre`) followed by the elements of `lst`
+ * into a freshly allocated argument vector of length max(n+len(lst), K).  The
+ * block is zero-initialized (GC_MALLOC) so the callee's K positional slots are
+ * always readable even when the call supplies fewer than K arguments. */
+val *rt_apply_argv(intptr_t n, val *pre, val lst, intptr_t K) {
+  intptr_t m = rt_list_length(lst);
+  intptr_t argc = n + m;
+  intptr_t cap = argc > K ? argc : K;
+  val *v = (val *)GC_MALLOC((size_t)(cap ? cap : 1) * sizeof(val));
+  for (intptr_t i = 0; i < n; i++) v[i] = pre[i];
+  for (intptr_t i = 0; i < m; i++) { v[n + i] = as_ptr(lst)[0]; lst = as_ptr(lst)[1]; }
+  return v;
+}
+
+/* arity error: report to stderr and abort with a non-zero exit code. */
+void rt_arity_error(intptr_t expected, intptr_t got) {
+  fprintf(stderr, "arity error: expected %ld argument(s), got %ld\n",
+          (long)expected, (long)got);
+  exit(1);
+}
+
 /* --- value printer (tag-walking, design R1) ---------------------------- */
 void rt_write(val v) {
   switch (tag_of(v)) {

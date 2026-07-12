@@ -218,17 +218,27 @@ with `0`. That was fixed-arity only: it could not express dotted rest params, va
 `emit.ss`).** Every Scheme function shares the widened prototype
 `tailcc i64 (i64 self, i64 argc, i64 a0 … i64 a{K-1}, ptr overflow)`:
 
-- `argc` — real argument count; fixed-arity callees ignore it.
+- `argc` — real argument count. Every callee checks it at entry: fixed-arity requires
+  `argc == f`, variadic requires `argc >= f`; a mismatch calls `rt_arity_error` and aborts
+  (non-zero exit) instead of miscomputing.
 - `a0..a{K-1}` — positional slots (`K` = whole-program max fixed arity, as today).
-- `overflow` — pointer to a heap vector of args beyond `K` (or null). Dotted-rest callees
-  collect `rest` from `a[fixed..min(argc,K))` ++ `overflow[0..]`; `apply` fills the
-  positional slots then spills the tail into `overflow`, so it is unbounded.
+- `overflow` — pointer to a heap vector of args beyond `K` (or null). A variadic callee
+  binds `rest` to `rt_build_rest(argc, fixed, K, slots, overflow)`, which walks arg indices
+  `[fixed, argc)` — reading `slots[i]` for `i < K` (the positional slots spilled to a small
+  array) and `overflow[i-K]` beyond — building a proper list. `apply` fills the positional
+  slots with the leading args and the first list elements, then points `overflow` at the
+  remaining flattened args (`rt_apply_argv`), so it is unbounded regardless of `K`.
 
-The **prototype/ABI is emitted now**: `emit.ss` widens every `define` and every call to
-this shape, passing the true `argc` and `ptr null` overflow. All functions are still
-fixed-arity, so `argc`/`overflow` are currently inert (callees ignore them). The
-`overflow`/`argc`-*consuming* features — dotted rest params, variadic `lambda`, `apply` —
-are a separate follow-on that builds additively on this ABI.
+The convention is now **fully consumed** (as of the variadic/`apply` change). A direct
+call passes the true `argc`, the first `K` args in the positional slots, and either
+`ptr null` (no excess) or a freshly spilled `overflow` vector when the call supplies more
+than `K` args. The **fixed-arity hot path stays allocation-free** — only variadic callees
+build a rest list and only over-`K`/`apply` call sites allocate an overflow vector; the
+entry arity check is a compare-and-branch on the cold path and the self tail-call passes
+the right `argc`, so it never trips. `musttail` is preserved: the rest list is built as
+straight-line code at callee entry, before the tail body, and the uniform prototype is
+unchanged (verified by `countdown`/`namedloop` at 10M iterations and by a variadic callee
+whose body tail-calls under `musttail`).
 
 The spike (`spike/calling-convention/`, real LLVM 22 IR, 100e6 tail iterations) showed
 this preserves `musttail`/bounded stack, costs ~0 on the fixed-arity hot path vs. today's

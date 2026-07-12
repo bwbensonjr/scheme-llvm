@@ -2,9 +2,14 @@
 ;;;
 ;;; Value = i64 tagged word (matches src/runtime/runtime.c).  Every Scheme
 ;;; function shares ONE prototype so musttail is legal (LLVM requires matching
-;;; caller/callee prototypes): tailcc i64 (i64 self, i64 a0 ... i64 a{K-1}),
-;;; K = max arity in the program; calls pad missing args with 0.  self is the
-;;; called closure (arg0), from which free variables are loaded.  The top-level
+;;; caller/callee prototypes):
+;;;   tailcc i64 (i64 self, i64 argc, i64 a0 ... i64 a{K-1}, ptr overflow)
+;;; K = max fixed arity in the program.  self is the called closure (arg0), from
+;;; which free variables are loaded.  argc is the actual argument count; the
+;;; first K args ride in the positional slots (padded with 0 when fewer) and any
+;;; excess spills through the overflow vector (null when there is none).  A
+;;; fixed-arity callee checks argc == f; a variadic callee (argc >= f) rebuilds
+;;; its rest list from the positional excess + overflow.  The top-level
 ;;; @scheme_entry is ccc (called from C main); its calls are regular, not tail.
 
 ;; --- output state (reset per program) ---
@@ -64,6 +69,8 @@
      (emit-make-closure label (map (lambda (c) (ev c env cp tc?)) caps))]
     [(closure-block ,entries ,body)
      (ev body (emit-closure-block entries env cp tc?) cp tc?)]
+    [(apply-app ,f ,args)
+     (emit-apply (ev f env cp tc?) (map (lambda (a) (ev a env cp tc?)) args) #f tc?)]
     [(app ,f ,args)
      (emit-app (ev f env cp tc?) (map (lambda (a) (ev a env cp tc?)) args) #f tc?)]))
 
@@ -77,6 +84,8 @@
        (et body env2 cp tc?))]
     [(closure-block ,entries ,body)
      (et body (emit-closure-block entries env cp tc?) cp tc?)]
+    [(apply-app ,f ,args)
+     (emit-apply (ev f env cp tc?) (map (lambda (a) (ev a env cp tc?)) args) #t tc?)]
     [(app ,f ,args)
      (emit-app (ev f env cp tc?) (map (lambda (a) (ev a env cp tc?)) args) #t tc?)]
     [else (emit! (string-append "ret i64 " (ev e env cp tc?)))]))
@@ -157,39 +166,95 @@
       allocs)
     env2))
 
-;; indirect closure call; tail? => terminate with (musttail if tc?) call + ret
-(define (emit-app fop aops tail? tc?)
+;; load the code pointer out of a (tagged) closure value; returns the fn operand
+(define (emit-load-code fop)
   (let ([b (fresh-temp)] [bp (fresh-temp)] [code (fresh-temp)] [fp (fresh-temp)])
     (emit! (string-append b " = and i64 " fop ", -8"))
     (emit! (string-append bp " = inttoptr i64 " b " to ptr"))
     (emit! (string-append code " = load i64, ptr " bp))
     (emit! (string-append fp " = inttoptr i64 " code " to ptr"))
-    (let* ([args (pad-args aops *arity*)]
-           ;; argc+overflow calling convention: self, argc (actual arg count),
-           ;; a0..a{K-1} (padded), overflow (null until variadic/apply exist).
-           [callargs (comma-join
-                       (append
-                         (list (string-append "i64 " fop)
-                               (string-append "i64 " (number->string (length aops))))
-                         (map (lambda (o) (string-append "i64 " o)) args)
-                         (list "ptr null")))]
-           [r (fresh-temp)])
-      (if tail?
-          (begin
-            (emit! (string-append r " = " (if tc? "musttail " "") "call tailcc i64 " fp "(" callargs ")"))
-            (emit! (string-append "ret i64 " r))
-            #f)
-          (begin
-            (emit! (string-append r " = call tailcc i64 " fp "(" callargs ")"))
-            r)))))
+    fp))
 
-(define *arity* 0)  ; K, set per program
-(define (pad-args aops k)
-  (append aops (make-list (max 0 (- k (length aops))) "0")))
+;; emit the call itself; tail? => terminate with (musttail if tc?) call + ret
+(define (finish-call fp callargs tail? tc?)
+  (let ([r (fresh-temp)])
+    (if tail?
+        (begin
+          (emit! (string-append r " = " (if tc? "musttail " "") "call tailcc i64 " fp "(" callargs ")"))
+          (emit! (string-append "ret i64 " r))
+          #f)
+        (begin
+          (emit! (string-append r " = call tailcc i64 " fp "(" callargs ")"))
+          r))))
+
+;; spill i64 operands into a fresh GC-allocated array; returns a ptr operand.
+(define (emit-spill ops)
+  (let ([raw (fresh-temp)] [p (fresh-temp)] [len (length ops)])
+    (emit! (string-append raw " = call i64 @rt_alloc_words(i64 " (number->string len) ")"))
+    (emit! (string-append p " = inttoptr i64 " raw " to ptr"))
+    (let loop ([i 0] [os ops])
+      (unless (null? os)
+        (let ([g (fresh-temp)])
+          (emit! (string-append g " = getelementptr i64, ptr " p ", i64 " (number->string i)))
+          (emit! (string-append "store i64 " (car os) ", ptr " g)))
+        (loop (+ i 1) (cdr os))))
+    p))
+
+;; indirect closure call with argc+overflow CC: self, argc (actual count),
+;; a0..a{K-1} (padded), overflow (excess args beyond K, else null).
+(define (emit-app fop aops tail? tc?)
+  (let* ([fp (emit-load-code fop)]
+         [n (length aops)]
+         [k *arity*]
+         [slots (if (>= n k)
+                    (list-head aops k)                     ; excess -> overflow
+                    (append aops (make-list (- k n) "0")))] ; pad short calls
+         [overflow (if (> n k) (emit-spill (list-tail aops k)) "null")]
+         [callargs (comma-join
+                     (append
+                       (list (string-append "i64 " fop)
+                             (string-append "i64 " (number->string n)))
+                       (map (lambda (o) (string-append "i64 " o)) slots)
+                       (list (string-append "ptr " overflow))))])
+    (finish-call fp callargs tail? tc?)))
+
+;; (apply f a1 .. aN lst): flatten the N leading args and the elements of lst
+;; into a runtime argv, load the K positional slots, and point overflow past K.
+(define (emit-apply fop aops tail? tc?)
+  (let* ([fp (emit-load-code fop)]
+         [k *arity*]
+         [n (- (length aops) 1)]                   ; leading (non-list) args
+         [pre (list-head aops n)]
+         [lst (list-ref aops n)]                   ; the list to spread
+         [preptr (if (zero? n) "null" (emit-spill pre))]
+         [m (fresh-temp)] [argc (fresh-temp)] [argv (fresh-temp)]
+         [ovcmp (fresh-temp)] [ovg (fresh-temp)] [ov (fresh-temp)]
+         [slots (map (lambda (i) (fresh-temp)) (iota k))])
+    (emit! (string-append m " = call i64 @rt_list_length(i64 " lst ")"))
+    (emit! (string-append argc " = add i64 " (number->string n) ", " m))
+    (emit! (string-append argv " = call ptr @rt_apply_argv(i64 " (number->string n)
+                          ", ptr " preptr ", i64 " lst ", i64 " (number->string k) ")"))
+    (for-each (lambda (s i)
+                (let ([g (fresh-temp)])
+                  (emit! (string-append g " = getelementptr i64, ptr " argv ", i64 " (number->string i)))
+                  (emit! (string-append s " = load i64, ptr " g))))
+              slots (iota k))
+    (emit! (string-append ovcmp " = icmp sgt i64 " argc ", " (number->string k)))
+    (emit! (string-append ovg " = getelementptr i64, ptr " argv ", i64 " (number->string k)))
+    (emit! (string-append ov " = select i1 " ovcmp ", ptr " ovg ", ptr null"))
+    (finish-call fp
+      (comma-join
+        (append
+          (list (string-append "i64 " fop) (string-append "i64 " argc))
+          (map (lambda (s) (string-append "i64 " s)) slots)
+          (list (string-append "ptr " ov))))
+      tail? tc?)))
+
+(define *arity* 0)  ; K = max fixed arity, set per program
 
 ;; --- top-level assembly ---
-(define (max-arity defs)
-  (fold-left (lambda (m d) (match d [(code ,l ,s ,params ,b) (max m (length params))])) 0 defs))
+(define (max-arity defs)  ; K = max fixed-param count across all code defs
+  (fold-left (lambda (m d) (match d [(code ,l ,s ,fixed ,rest ,b) (max m (length fixed))])) 0 defs))
 
 (define (rt-declarations)
   (string-append
@@ -207,21 +272,52 @@
    "declare i64 @rt_lt(i64, i64)\n"
    "declare i64 @rt_null_p(i64)\n"
    "declare i64 @rt_pair_p(i64)\n"
-   "declare i64 @rt_eq_p(i64, i64)\n\n"))
+   "declare i64 @rt_eq_p(i64, i64)\n"
+   "declare i64 @rt_list_length(i64)\n"
+   "declare i64 @rt_build_rest(i64, i64, i64, ptr, ptr)\n"
+   "declare ptr @rt_apply_argv(i64, ptr, i64, i64)\n"
+   "declare void @rt_arity_error(i64, i64)\n\n"))
+
+;; entry arity check: fixed callee requires argc == f, variadic requires
+;; argc >= f; a mismatch calls rt_arity_error (which aborts).  Leaves emission
+;; positioned in a fresh "ok" block.
+(define (emit-arity-check f rest?)
+  (let ([ok (fresh-temp)] [errbb (fresh-bb "arityerr")] [okbb (fresh-bb "argok")])
+    (emit! (string-append ok " = icmp " (if rest? "sge" "eq") " i64 %argc, " (number->string f)))
+    (emit! (string-append "br i1 " ok ", label %" okbb ", label %" errbb))
+    (start-bb errbb)
+    (emit! (string-append "call void @rt_arity_error(i64 " (number->string f) ", i64 %argc)"))
+    (emit! "unreachable")
+    (start-bb okbb)))
+
+;; variadic callee prologue: spill the K positional slots into an array and call
+;; rt_build_rest to collect args [f, argc) (positional excess + overflow) into a
+;; list.  Returns the operand holding that list.
+(define (emit-build-rest f k)
+  (let ([slots (emit-spill (map (lambda (i) (string-append "%a" (number->string i))) (iota k)))]
+        [r (fresh-temp)])
+    (emit! (string-append r " = call i64 @rt_build_rest(i64 %argc, i64 " (number->string f)
+                          ", i64 " (number->string k) ", ptr " slots ", ptr %overflow)"))
+    r))
 
 (define (emit-code-def def k)
   (match def
-    [(code ,label ,self ,params ,body)
+    [(code ,label ,self ,fixed ,rest ,body)
      (set! emit-lines '()) (set! current-bb "entry")
-     (let ([argdecls (comma-join
-                       (append
-                         (list "i64 %self" "i64 %argc")
-                         (map (lambda (i) (string-append "i64 %a" (number->string i))) (iota k))
-                         (list "ptr %overflow")))]  ; argc+overflow CC; both unused until variadic/apply
-           [env (map (lambda (p i) (cons p (string-append "%a" (number->string i))))
-                     params (iota (length params)))])
+     (let* ([f (length fixed)]
+            [argdecls (comma-join
+                        (append
+                          (list "i64 %self" "i64 %argc")
+                          (map (lambda (i) (string-append "i64 %a" (number->string i))) (iota k))
+                          (list "ptr %overflow")))]
+            [env0 (map (lambda (p i) (cons p (string-append "%a" (number->string i))))
+                       fixed (iota f))])
        (start-bb "entry")
-       (et body env "%self" #t)
+       (emit-arity-check f rest)                    ; then positioned in the ok block
+       (let ([env (if rest
+                      (cons (cons rest (emit-build-rest f k)) env0)  ; hot path: fixed only
+                      env0)])
+         (et body env "%self" #t))
        (string-append "define tailcc i64 @" label "(" argdecls ") {\n"
                       (lines->string (reverse emit-lines)) "}\n\n"))]))
 
