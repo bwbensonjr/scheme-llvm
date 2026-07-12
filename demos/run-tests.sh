@@ -72,6 +72,12 @@ check struni  demos/string-unicode.scm '(5 #\é "日本")'         # codepoint-i
 echo "prelude demos"
 check prelude demos/prelude.scm        '(1 4 9 6 5 4)'  # standard library: list/map/reverse/append
 
+echo "reader demos"
+check rdlist  demos/reader-list.scm    '(a (b c) 42)'         # read a nested list
+check rdatoms demos/reader-atoms.scm   '(42 hello #t #\z "hi")'  # each atom type
+check rdeq    demos/reader-eq.scm      '#t'                   # read symbol interned (eq? literal)
+check rdquote demos/reader-quote.scm   '(quote x)'            # comment skipped + quote sugar
+
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -88,6 +88,10 @@ run3 strops    demos/string-ops.scm      '(65 3 #\b "ell" foo)'  # char/string a
 run3 strsym    demos/string-symbol.scm   '#t'                    # string->symbol interns
 run3 struni    demos/string-unicode.scm  '(5 #\é "日本")'         # codepoint indexing, non-ASCII
 run3 prelude   demos/prelude.scm          '(1 4 9 6 5 4)'  # standard library procedures
+run3 rdlist    demos/reader-list.scm      '(a (b c) 42)'            # reader: nested list
+run3 rdatoms   demos/reader-atoms.scm     '(42 hello #t #\z "hi")'  # reader: atom types
+run3 rdeq      demos/reader-eq.scm        '#t'                      # reader: interned symbol
+run3 rdquote   demos/reader-quote.scm     '(quote x)'               # reader: comment + quote
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
