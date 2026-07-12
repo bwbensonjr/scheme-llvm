@@ -29,9 +29,37 @@
                       (expand-let-form 'let (cadr e) (cddr e)))]
         [(letrec) (expand-let-form 'letrec (cadr e) (cddr e))]
         [(lambda) `(lambda ,(cadr e) ,@(map expand (cddr e)))]
+        [(+ - *) (expand-arith (car e) (cdr e))]
         ;; if / begin / set! / primcall / application: recurse into every
         ;; position (operators and operands, never binding lists).
         [else     (map expand e)])))
+
+;; N-ary arithmetic -> nested binary forms.  Operands are expanded first (so
+;; nested derived forms / nested arithmetic fold correctly), then left-folded so
+;; operands evaluate left-to-right and `-` subtracts in order.  Identities:
+;; (+) -> 0, (*) -> 1, (- a) -> (- 0 a).  (-) with no args is an arity error.
+;; The two-operand case reduces to (op a b) unchanged, so existing binary calls
+;; are byte-for-byte identical.
+(define (expand-arith op args)
+  (let ([xs (map expand args)])
+    (case op
+      [(+) (cond [(null? xs) 0]
+                 [(null? (cdr xs)) (car xs)]
+                 [else (fold-arith op xs)])]
+      [(*) (cond [(null? xs) 1]
+                 [(null? (cdr xs)) (car xs)]
+                 [else (fold-arith op xs)])]
+      [(-) (cond [(null? xs) (error 'expand "(-) requires at least one argument")]
+                 [(null? (cdr xs)) `(- 0 ,(car xs))]
+                 [else (fold-arith op xs)])])))
+
+;; Left-associative fold of >=2 already-expanded operands into nested binary
+;; applications: (op (op (op a b) c) d) ...
+(define (fold-arith op xs)
+  (let loop ([acc (list op (car xs) (cadr xs))] [rest (cddr xs)])
+    (if (null? rest)
+        acc
+        (loop (list op acc (car rest)) (cdr rest)))))
 
 (define (expand-cond clauses)
   (if (null? clauses)

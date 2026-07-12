@@ -30,6 +30,7 @@ check countdown demos/countdown.scm 999   # 10M tail iterations in bounded stack
 check toplevel  demos/toplevel.scm  102   # multi-define program (letrec desugar)
 check derived   demos/derived.scm   180   # cond/and/or/when/unless/let*/named-let
 check namedloop demos/named-let-loop.scm 42  # named-let tail loop, bounded stack
+check naryarith demos/nary-arith.scm 43  # n-ary + - *, unary negation, identities
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
