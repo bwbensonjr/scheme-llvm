@@ -24,8 +24,15 @@ Boehm GC (`libgc`) into a runnable native executable.
 
 - **WHEN** the emitted IR and runtime represent values
 - **THEN** immediates (fixnums, booleans, `()`) are tagged inline, heap objects (pairs,
-  closures) are header-tagged and allocated through `libgc`, and closures are called
-  indirectly through their `code_ptr`
+  closures, interned symbols) are pointer-tagged and allocated through `libgc`, and
+  closures are called indirectly through their `code_ptr`
+
+#### Scenario: Symbols are interned and quoted structure is materialized
+
+- **WHEN** the IR encodes a quoted symbol or a quoted list
+- **THEN** a symbol is a call to `rt_intern` on an emitted private string constant (equal
+  names canonicalize to one object), and a quoted pair is materialized by emitted
+  `rt_cons` code over the recursively encoded elements
 
 ### Requirement: Each pipeline stage is independently observable
 

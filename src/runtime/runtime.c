@@ -10,6 +10,7 @@
  *   tag 011  pair      pointer, heap {car, cdr}
  *   tag 100  closure   pointer, heap {code_ptr, free0, ...}
  *   tag 101  box       pointer, heap {value}   (assignment-converted vars)
+ *   tag 110  symbol    pointer, heap {name}    (interned; eq? by identity)
  *
  * Scheme truthiness: only #f is false; everything else (incl. 0 and ()) is true.
  */
@@ -17,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <gc/gc.h>
 
 typedef intptr_t val;
@@ -28,6 +30,7 @@ typedef intptr_t val;
 #define TAG_PAIR    3
 #define TAG_CLOSURE 4
 #define TAG_BOX     5
+#define TAG_SYMBOL  6
 
 #define FIX(n)     ((val)(((intptr_t)(n)) << 3))
 #define UNFIX(v)   (((intptr_t)(v)) >> 3)
@@ -111,6 +114,43 @@ void rt_arity_error(intptr_t expected, intptr_t got) {
   exit(1);
 }
 
+/* --- symbols (interned) ------------------------------------------------ */
+/* A symbol is a heap object { char *name }.  rt_intern canonicalizes by name so
+ * two symbols with the same name are the same word, making eq? correct for
+ * symbols with no special case.  The intern table array is allocated
+ * GC_MALLOC_UNCOLLECTABLE: it is never collected and IS scanned for pointers, so
+ * the symbols it holds are kept alive as roots.  (A plain static pointer into
+ * the GC heap is not enough — under lli's JIT the module's data segment is not a
+ * registered Boehm root, so the array would be collected mid-run.) */
+static val *intern_table = NULL;   /* uncollectable, scanned array of symbols */
+static intptr_t intern_count = 0;
+static intptr_t intern_cap = 0;
+
+static const char *sym_name(val s) { return (const char *)as_ptr(s)[0]; }
+
+val rt_intern(const char *name) {
+  for (intptr_t i = 0; i < intern_count; i++)
+    if (strcmp(sym_name(intern_table[i]), name) == 0) return intern_table[i];
+
+  size_t len = strlen(name);
+  char *copy = (char *)GC_MALLOC_ATOMIC(len + 1);   /* name has no pointers */
+  memcpy(copy, name, len + 1);
+  val *p = (val *)GC_MALLOC(sizeof(val));
+  p[0] = (val)copy;
+  val s = tag_ptr(p, TAG_SYMBOL);
+
+  if (intern_count == intern_cap) {
+    intptr_t ncap = intern_cap ? intern_cap * 2 : 16;
+    val *nt = (val *)GC_MALLOC_UNCOLLECTABLE((size_t)ncap * sizeof(val));
+    for (intptr_t i = 0; i < intern_count; i++) nt[i] = intern_table[i];
+    if (intern_table) GC_free(intern_table);
+    intern_table = nt;
+    intern_cap = ncap;
+  }
+  intern_table[intern_count++] = s;
+  return s;
+}
+
 /* --- value printer (tag-walking, design R1) ---------------------------- */
 void rt_write(val v) {
   switch (tag_of(v)) {
@@ -132,6 +172,7 @@ void rt_write(val v) {
     }
     case TAG_CLOSURE: printf("#<procedure>"); break;
     case TAG_BOX:     printf("#<box>"); break;
+    case TAG_SYMBOL:  printf("%s", sym_name(v)); break;
     default:          printf("#<unknown:%ld>", (long)v);
   }
 }

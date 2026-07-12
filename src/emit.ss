@@ -23,13 +23,68 @@
 (define (start-bb name) (emit! (string-append name ":")) (set! current-bb name))
 (define (reset-emit!) (set! temp-n 0) (set! lbl-n 0) (set! emit-lines '()) (set! current-bb "entry"))
 
+;; --- symbol string constants (module-level globals, reset per program) ---
+;; A quoted symbol becomes a private string-constant global plus a per-use
+;; rt_intern call.  Globals are deduped by name and accumulated here, then
+;; prepended to the module by emit-program.
+(define sym-globals '())          ; list of "@.str.sym.N = ..." definition lines
+(define sym-table '())            ; alist: name-string -> "@.str.sym.N"
+(define sym-n 0)
+(define (reset-symbols!) (set! sym-globals '()) (set! sym-table '()) (set! sym-n 0))
+(define (symbol-globals) (apply string-append (reverse sym-globals)))
+
+(define (hex2 b)                  ; byte -> two uppercase hex digits
+  (let ([s (number->string b 16)])
+    (string-upcase (if (= (string-length s) 1) (string-append "0" s) s))))
+
+;; escape a name for an LLVM c"..." literal; return (values escaped byte-count),
+;; the count including the trailing NUL.  Printable ASCII except " and \ go
+;; through verbatim; everything else (incl. UTF-8 bytes) as \XX.
+(define (llvm-cstring name)
+  (let* ([bv (string->utf8 name)] [n (bytevector-length bv)])
+    (let loop ([i 0] [acc '()])
+      (if (= i n)
+          (values (apply string-append (reverse acc)) (+ n 1))
+          (let ([b (bytevector-u8-ref bv i)])
+            (loop (+ i 1)
+                  (cons (if (and (>= b #x20) (<= b #x7e) (not (= b #x22)) (not (= b #x5c)))
+                            (string (integer->char b))
+                            (string-append "\\" (hex2 b)))
+                        acc)))))))
+
+(define (symbol-global name)      ; intern the name's global, return its @operand
+  (cond
+    [(assoc name sym-table) => cdr]
+    [else
+     (let-values ([(esc len) (llvm-cstring name)])
+       (let* ([g (string-append "@.str.sym." (number->string sym-n))]
+              [def (string-append g " = private unnamed_addr constant ["
+                                  (number->string len) " x i8] c\"" esc "\\00\"\n")])
+         (set! sym-n (+ sym-n 1))
+         (set! sym-table (cons (cons name g) sym-table))
+         (set! sym-globals (cons def sym-globals))
+         g))]))
+
 ;; --- constants and primitives (must match runtime.c tags) ---
+;; Immediates encode inline to an operand with no emission; a symbol emits an
+;; rt_intern call and a pair materializes via rt_cons (recursing), so encode-const
+;; may emit into the current function and returns the resulting operand.
 (define (encode-const d)
   (cond
     [(and (integer? d) (exact? d)) (number->string (* d 8))]  ; fixnum: n<<3
     [(eq? d #t) "9"]                                          ; TRUE_V
     [(eq? d #f) "1"]                                          ; FALSE_V
     [(null? d) "2"]                                           ; NIL_V
+    [(symbol? d)
+     (let ([g (symbol-global (symbol->string d))] [t (fresh-temp)])
+       (emit! (string-append t " = call i64 @rt_intern(ptr " g ")"))
+       t)]
+    [(pair? d)                                                ; materialize at runtime
+     (let* ([a  (encode-const (car d))]
+            [dd (encode-const (cdr d))]
+            [t  (fresh-temp)])
+       (emit! (string-append t " = call i64 @rt_cons(i64 " a ", i64 " dd ")"))
+       t)]
     [else (error 'emit "bad const" d)]))
 
 (define prim-table
@@ -273,6 +328,7 @@
    "declare i64 @rt_null_p(i64)\n"
    "declare i64 @rt_pair_p(i64)\n"
    "declare i64 @rt_eq_p(i64, i64)\n"
+   "declare i64 @rt_intern(ptr)\n"
    "declare i64 @rt_list_length(i64)\n"
    "declare i64 @rt_build_rest(i64, i64, i64, ptr, ptr)\n"
    "declare ptr @rt_apply_argv(i64, ptr, i64, i64)\n"
@@ -332,6 +388,11 @@
   (match prog
     [(program ,defs ,entry)
      (set! *arity* (max-arity defs))
-     (string-append (rt-declarations)
-                    (apply string-append (map (lambda (d) (emit-code-def d *arity*)) defs))
-                    (emit-entry entry))]))
+     (reset-symbols!)
+     ;; emit bodies first (populating the symbol-global accumulator), then
+     ;; assemble with the private string constants prepended to the module.
+     (let* ([body (apply string-append (map (lambda (d) (emit-code-def d *arity*)) defs))]
+            [ent  (emit-entry entry)])
+       (string-append (rt-declarations)
+                      (symbol-globals)
+                      body ent))]))

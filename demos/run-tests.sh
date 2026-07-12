@@ -51,6 +51,13 @@ check varall   demos/variadic-all.scm  "(1 2 3)" # all-args variadic (bare symbo
 check apply    demos/apply.scm         45        # apply over a list longer than K
 check_fail arityerr demos/arity-error.scm        # fixed-arity mismatch aborts non-zero
 
+echo "symbols / quote demos"
+check qsym    demos/quote-symbol.scm   hello       # quoted symbol prints by name
+check symeq   demos/symbol-eq.scm      "#t"        # interned symbols: eq? identity
+check qlist   demos/quote-list.scm     "(a (b c) 1)"  # materialized nested structure
+check qtrav   demos/quote-traverse.scm "(b c)"     # car/cdr over quoted structure
+check symgc   demos/symbol-gc.scm      "#t"        # intern table survives GC
+
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

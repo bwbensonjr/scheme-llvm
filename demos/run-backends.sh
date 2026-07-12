@@ -75,6 +75,11 @@ run3 varrest   demos/variadic-rest.scm   "(3 4)"   # dotted rest parameter
 run3 varall    demos/variadic-all.scm    "(1 2 3)" # all-args variadic
 run3 apply     demos/apply.scm           45        # apply spreads overflow; variadic musttail
 run3_fail arityerr demos/arity-error.scm            # arity mismatch aborts under all 3
+run3 qsym      demos/quote-symbol.scm    hello         # quoted symbol prints by name
+run3 symeq     demos/symbol-eq.scm       "#t"          # interned symbol eq? identity
+run3 qlist     demos/quote-list.scm      "(a (b c) 1)" # materialized quoted structure
+run3 qtrav     demos/quote-traverse.scm  "(b c)"       # car/cdr over quoted structure
+run3 symgc     demos/symbol-gc.scm       "#t"          # intern table survives GC
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
