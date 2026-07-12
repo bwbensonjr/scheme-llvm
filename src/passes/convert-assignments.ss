@@ -16,6 +16,8 @@
     [(if ,a ,b ,c) (union (fa a) (union (fa b) (fa c)))]
     [(seq ,a ,b) (union (fa a) (fa b))]
     [(set! ,x ,rhs) (union (list x) (fa rhs))]
+    [(global-ref ,s) '()]
+    [(global-set! ,s ,rhs) (fa rhs)]
     [(primcall ,op . ,args) (union* (map fa args))]
     [(lambda ,params ,body) (fa body)]
     [(let ,binds ,body) (union (union* (map (lambda (b) (fa (cadr b))) binds)) (fa body))]
@@ -43,6 +45,8 @@
     (match e
       [(const ,d) e]
       [,x (guard (symbol? x)) (if (asgd? x) `(primcall unbox ,x) x)]
+      [(global-ref ,s) e]
+      [(global-set! ,s ,rhs) `(global-set! ,s ,(cvt rhs))]
       [(set! ,x ,rhs) `(primcall set-box! ,x ,(cvt rhs))]
       [(if ,a ,b ,c) `(if ,(cvt a) ,(cvt b) ,(cvt c))]
       [(seq ,a ,b) `(seq ,(cvt a) ,(cvt b))]

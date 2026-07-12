@@ -9,6 +9,8 @@
     [(if ,a ,b ,c) `(if ,(rl a) ,(rl b) ,(rl c))]
     [(seq ,a ,b) `(seq ,(rl a) ,(rl b))]
     [(set! ,x ,rhs) `(set! ,x ,(rl rhs))]
+    [(global-ref ,s) e]
+    [(global-set! ,s ,rhs) `(global-set! ,s ,(rl rhs))]
     [(primcall ,op . ,args) `(primcall ,op ,@(map rl args))]
     [(apply ,f . ,args) `(apply ,(rl f) ,@(map rl args))]
     [(lambda ,params ,body) `(lambda ,params ,(rl body))]

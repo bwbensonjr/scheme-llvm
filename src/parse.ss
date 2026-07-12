@@ -128,6 +128,92 @@
       [else                              ; a non-final top-level expression
        (loop (cdr fs) binds (cons (car fs) pre))])))
 
+;; ---- REPL top-level model: persistent global definitions -----------------
+;; Batch `collect-toplevel` folds a whole program into one letrec.  The REPL
+;; instead compiles each entered form on its own, and top-level `define`s become
+;; *persistent globals* that survive across forms.  A definition introduces two
+;; new core-IL nodes that thread through the remaining passes:
+;;
+;;   (global-ref  sym)      -- load the current value of a persistent global
+;;   (global-set! sym e)    -- store e into a persistent global slot (its value)
+;;
+;; `sym` is a *generation-mangled* symbol (e.g. x.g0, x.g1): redefining a name
+;; allocates a fresh generation, so later forms resolve the name to the newest
+;; binding while already-compiled forms keep the symbol they captured.  The
+;; environment maps user names -> current mangled symbol.
+
+(define (make-repl-env) (vector '() 0))          ; #(name->sym alist, generation)
+
+(define (repl-env-lookup env name)               ; -> mangled sym, or #f
+  (let ([p (assq name (vector-ref env 0))]) (and p (cdr p))))
+
+(define (repl-env-define! env name)              ; allocate a fresh generation
+  (let* ([g   (vector-ref env 1)]
+         [sym (string->symbol
+                (string-append (symbol->string name) ".g" (number->string g)))])
+    (vector-set! env 1 (+ g 1))
+    (vector-set! env 0 (cons (cons name sym) (vector-ref env 0)))
+    sym))
+
+;; Post-rename resolution: a bare symbol that is not bound by an enclosing
+;; lambda/let/letrec is a top-level reference.  Map each to a (global-ref sym)
+;; via the REPL env, or raise an unbound-variable error -- a form may reference
+;; globals from earlier forms but never a later (undefined) one, which is
+;; exactly normal REPL scoping.  Resolution tracks the bound locals as it
+;; descends so renamed params (e.g. n.0) are left alone.
+(define (resolve-globals e env)
+  (define (R e bound)
+    (define (Rb e) (R e bound))
+    (match e
+      [(const ,d) e]
+      [(global-ref ,s) e]
+      [(global-set! ,s ,rhs) `(global-set! ,s ,(Rb rhs))]
+      [,x (guard (symbol? x))
+          (if (memq x bound)
+              x                                    ; a bound local
+              (let ([s (repl-env-lookup env x)])
+                (or (and s `(global-ref ,s))
+                    (error 'repl "unbound variable" x))))]
+      [(if ,a ,b ,c) `(if ,(Rb a) ,(Rb b) ,(Rb c))]
+      [(seq ,a ,b) `(seq ,(Rb a) ,(Rb b))]
+      [(set! ,x ,rhs) `(set! ,x ,(Rb rhs))]        ; x is a renamed local
+      [(primcall ,op . ,args) `(primcall ,op ,@(map Rb args))]
+      [(apply ,f . ,args) `(apply ,(Rb f) ,@(map Rb args))]
+      [(call ,f . ,args) `(call ,(Rb f) ,@(map Rb args))]
+      [(lambda ,params ,body)
+       `(lambda ,params ,(R body (append (param-names params) bound)))]
+      [(let ,binds ,body)                          ; rhs in the outer scope
+       (let ([bound2 (append (map car binds) bound)])
+         `(let ,(map (lambda (b) (list (car b) (Rb (cadr b)))) binds)
+            ,(R body bound2)))]
+      [(letrec ,binds ,body)                       ; rhs in the new (recursive) scope
+       (let ([bound2 (append (map car binds) bound)])
+         `(letrec ,(map (lambda (b) (list (car b) (R (cadr b) bound2))) binds)
+            ,(R body bound2)))]))
+  (R e '()))
+
+;; Lower one entered top-level form (an s-expr) against the REPL env, returning
+;; core IL for that form.  A `(define name init)` becomes a (global-set! sym ..)
+;; whose value is the stored value; any other form is just its own expression.
+;;
+;; Generation timing mirrors batch `build-program`'s letrec-vs-let split: a
+;; lambda definition registers its new symbol BEFORE its init is resolved, so a
+;; self-reference recurses into the new binding; a value definition registers
+;; AFTER, so its init sees the previous binding (e.g. (define x (+ x 1))).
+(define (repl-lower-form env form)
+  (define (prep sexp) (resolve-globals (rename-program (parse-program sexp)) env))
+  (cond
+    [(define-form? form)
+     (let* ([nd   (normalize-define form)]
+            [name (car nd)]
+            [init (cadr nd)])
+       (if (lambda-init? init)
+           (let ([sym (repl-env-define! env name)])
+             `(global-set! ,sym ,(prep init)))
+           (let ([init-il (prep init)])
+             `(global-set! ,(repl-env-define! env name) ,init-il))))]
+    [else (prep form)]))
+
 ;; ---- alpha-rename: make every bound variable globally unique ----
 (define (rename-program e) (rename e '()))
 

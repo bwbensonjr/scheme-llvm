@@ -34,6 +34,8 @@
           [(memq x locals) `(local ,x)]
           [(assq x fmap) => (lambda (p) `(free-ref ,(cdr p)))]
           [else (error 'lower "unbound variable" x)])]
+    [(global-ref ,s) `(global-ref ,s)]
+    [(global-set! ,s ,rhs) `(global-set! ,s ,(L rhs))]
     [(if ,a ,b ,c) `(if ,(L a) ,(L b) ,(L c))]
     [(seq ,a ,b) `(seq ,(L a) ,(L b))]
     [(primcall ,op . ,args) `(primcall ,op ,@(map L args))]

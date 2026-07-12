@@ -7,6 +7,8 @@
   (match e
     [(const ,d) '()]
     [,x (guard (symbol? x)) (list x)]
+    [(global-ref ,s) '()]
+    [(global-set! ,s ,rhs) (fv rhs)]
     [(if ,a ,b ,c) (union (fv a) (union (fv b) (fv c)))]
     [(seq ,a ,b) (union (fv a) (fv b))]
     [(primcall ,op . ,args) (union* (map fv args))]
@@ -28,6 +30,8 @@
   (match e
     [(const ,d) e]
     [,x (guard (symbol? x)) x]
+    [(global-ref ,s) e]
+    [(global-set! ,s ,rhs) `(global-set! ,s ,(cc rhs))]
     [(if ,a ,b ,c) `(if ,(cc a) ,(cc b) ,(cc c))]
     [(seq ,a ,b) `(seq ,(cc a) ,(cc b))]
     [(primcall ,op . ,args) `(primcall ,op ,@(map cc args))]

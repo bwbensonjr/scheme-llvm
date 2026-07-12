@@ -134,6 +134,14 @@
     [(const ,d) (encode-const d)]
     [(local ,x) (cdr (assq x env))]
     [(free-ref ,i) (load-free cp i)]
+    [(global-ref ,s)
+     (let ([t (fresh-temp)])
+       (emit! (string-append t " = load i64, ptr " (global-operand s)))
+       t)]
+    [(global-set! ,s ,e)                     ; store into the slot; value = stored
+     (let ([op (ev e env cp tc?)])
+       (emit! (string-append "store i64 " op ", ptr " (global-operand s)))
+       op)]
     [(if ,a ,b ,c) (ev-if a b c env cp tc?)]
     [(seq ,a ,b) (ev a env cp tc?) (ev b env cp tc?)]
     [(let ,binds ,body)
@@ -432,3 +440,100 @@
        (string-append (rt-declarations)
                       (symbol-globals)
                       body ent))]))
+
+;; --- REPL emission: persistent globals + per-form entry thunks ------------
+;; In a persistent session, closures built by one form's module are called from
+;; later forms' modules, so the shared closure arity K must be identical across
+;; every module (design D6).  REPL emission therefore pins K to a session-wide
+;; constant instead of the per-program max.
+(define repl-arity 8)
+
+;; LLVM global operand for a (generation-mangled, possibly non-identifier)
+;; top-level symbol.  Names are quoted so characters like ? ! - > are legal.
+(define (global-operand s)
+  (string-append "@\"" (symbol->string s) "\""))
+
+;; Scan an L-code program for the persistent globals it defines (global-set!
+;; targets) and references (global-ref / global-set! targets).
+(define (repl-scan-globals prog)
+  (let ([defd '()] [refd '()])
+    (define (S e)
+      (match e
+        [(const ,d) (void)]
+        [(local ,x) (void)]
+        [(free-ref ,i) (void)]
+        [(global-ref ,s) (set! refd (union refd (list s)))]
+        [(global-set! ,s ,e) (set! defd (union defd (list s)))
+                             (set! refd (union refd (list s))) (S e)]
+        [(if ,a ,b ,c) (S a) (S b) (S c)]
+        [(seq ,a ,b) (S a) (S b)]
+        [(primcall ,op . ,args) (for-each S args)]
+        [(let ,binds ,body) (for-each (lambda (b) (S (cadr b))) binds) (S body)]
+        [(make-closure ,label ,caps) (for-each S caps)]
+        [(closure-block ,entries ,body)
+         (for-each (lambda (en) (for-each S (caddr en))) entries) (S body)]
+        [(app ,f ,args) (S f) (for-each S args)]
+        [(apply-app ,f ,args) (S f) (for-each S args)]))
+    (match prog
+      [(program ,cdefs ,entry)
+       (for-each (lambda (d) (match d [(code ,l ,self ,fixed ,rest ,body) (S body)])) cdefs)
+       (S entry)])
+    (values defd refd)))
+
+(define (repl-check-arity prog)   ; enforce the pinned K (design D6)
+  (match prog
+    [(program ,cdefs ,entry)
+     (for-each
+       (lambda (d)
+         (match d
+           [(code ,l ,self ,fixed ,rest ,body)
+            (when (> (length fixed) repl-arity)
+              (error 'emit
+                     (string-append "definition arity exceeds REPL max ("
+                                    (number->string repl-arity) ")")
+                     l))]))
+       cdefs)]))
+
+(define (emit-named-entry entry name)   ; ccc thunk @name returning the value
+  (set! emit-lines '()) (set! current-bb "entry")
+  (start-bb "entry")
+  (et entry '() #f #f)
+  (string-append "define i64 @" name "() {\n"
+                 (lines->string (reverse emit-lines)) "}\n\n"))
+
+;; Emit ONE module holding a whole session's worth of forms: every form's code
+;; defs, one @__repl_N thunk per form, a single definition of each persistent
+;; global slot, and a @scheme_entry that runs the thunks in order and returns
+;; the last form's value.  This drives the batch-JIT validation of the
+;; persistent-globals model (design D5 stage 1) with no separate-module linking.
+(define (emit-repl-batch progs)
+  (reset-emit!) (reset-symbols!)
+  (set! *arity* repl-arity)
+  (for-each repl-check-arity progs)
+  (let loop ([ps progs] [n 1] [bodies '()] [thunks '()] [defd '()] [calls '()] [last #f])
+    (if (null? ps)
+        (let* ([slots (apply string-append
+                        (map (lambda (s) (string-append (global-operand s)
+                                                        " = global i64 0\n"))
+                             defd))]
+               [entry (string-append
+                        "define i64 @scheme_entry() {\nentry:\n"
+                        (apply string-append (reverse calls))
+                        "  ret i64 " (or last "2") "\n}\n")])
+          (string-append (rt-declarations) (symbol-globals) slots
+                         (apply string-append (reverse bodies))
+                         (apply string-append (reverse thunks))
+                         entry))
+        (let*-values ([(prog) (car ps)]
+                      [(fd rd) (repl-scan-globals prog)])
+          (match prog
+            [(program ,cdefs ,e)
+             (let* ([body (apply string-append
+                            (map (lambda (d) (emit-code-def d repl-arity)) cdefs))]
+                    [name (string-append "__repl_" (number->string n))]
+                    [thunk (emit-named-entry e name)]
+                    [r (string-append "%r" (number->string n))]
+                    [call (string-append "  " r " = call i64 @" name "()\n")])
+               (loop (cdr ps) (+ n 1)
+                     (cons body bodies) (cons thunk thunks)
+                     (union defd fd) (cons call calls) r))])))))
