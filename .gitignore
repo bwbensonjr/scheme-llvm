@@ -1,6 +1,12 @@
 *~
 .DS_Store
-.claude
+
+# Local, machine-specific Claude Code settings (the shared .claude/ — skills,
+# commands, settings.json — is committed; only per-machine local files are ignored)
+.claude/settings.local.json
+.claude/*.local.json
+.claude/*.local.md
+CLAUDE.local.md
 
 # build artifacts
 spike/calling-convention/spike
