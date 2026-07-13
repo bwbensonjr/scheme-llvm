@@ -54,10 +54,13 @@ The compiler SHALL provide `filter`, `fold-left`, and `fold-right` over a single
 
 #### Scenario: fold-left accumulates left to right
 
-- **WHEN** a program evaluates `(fold-left - 0 (quote (1 2 3)))`
+- **WHEN** a program evaluates `(fold-left (lambda (a b) (- a b)) 0 (quote (1 2 3)))`
 - **THEN** the result is `-6` (`((0-1)-2)-3`)
 
 #### Scenario: fold-right accumulates right to left
 
-- **WHEN** a program evaluates `(fold-right cons (quote ()) (quote (1 2 3)))`
+- **WHEN** a program evaluates `(fold-right (lambda (x acc) (cons x acc)) (quote ()) (quote (1 2 3)))`
 - **THEN** the result is `(1 2 3)`
+
+Note: primitives (`-`, `cons`, …) are not first-class values in this compiler, so a
+higher-order argument must be a lambda (e.g. `(lambda (a b) (- a b))`), not the bare primitive.

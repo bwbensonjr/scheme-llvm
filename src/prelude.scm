@@ -3,9 +3,10 @@
 ;;; Pure Scheme over the core primitives + variadic lambda; the driver
 ;;; (src/compile.ss) prepends these top-level defines to each program, with
 ;;; user-wins shadowing (a user define of the same name drops the prelude's).
-;;; See openspec prelude-mechanism.  memq/assq compare with eq? (the only
-;;; equality available yet; member/assoc arrive with equal?).  not/eq?/eqv?
-;;; are primitives (see prim-table), so they are not defined here.
+;;; See openspec prelude-mechanism.  memq/assq compare with eq?; member/assoc
+;;; are their structural analogues over equal? (see openspec
+;;; equality-and-list-library).  not/eq?/eqv?/equal? are primitives (see
+;;; prim-table), so they are not defined here.
 
 ;;; --- derived syntactic forms (syntax-rules macros) ------------------------
 ;;; cond/and/or/when/unless/let* are macros expanded by src/passes/expand.ss.
@@ -67,6 +68,29 @@
 
 (define (assq k xs)
   (if (null? xs) #f (if (eq? k (car (car xs))) (car xs) (assq k (cdr xs)))))
+
+;;; --- structural list library (equality-and-list-library) ------------------
+;;; member/assoc mirror memq/assq but compare with equal? (structural).
+(define (member x xs)
+  (if (null? xs) #f (if (equal? x (car xs)) xs (member x (cdr xs)))))
+
+(define (assoc k xs)
+  (if (null? xs) #f (if (equal? k (car (car xs))) (car xs) (assoc k (cdr xs)))))
+
+(define (filter p xs)
+  (if (null? xs)
+      (quote ())
+      (if (p (car xs))
+          (cons (car xs) (filter p (cdr xs)))
+          (filter p (cdr xs)))))
+
+;; fold-left: tail-recursive, f receives (acc elem), left-to-right (R6RS order).
+(define (fold-left f acc xs)
+  (if (null? xs) acc (fold-left f (f acc (car xs)) (cdr xs))))
+
+;; fold-right: non-tail, f receives (elem acc), right-to-left (R6RS order).
+(define (fold-right f acc xs)
+  (if (null? xs) acc (f (car xs) (fold-right f acc (cdr xs)))))
 
 ;;; --- reader (scheme-reader): read-from-string source text -> datum --------
 ;;; Recursive descent over a string; the scan position is threaded functionally

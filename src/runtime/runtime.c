@@ -319,6 +319,25 @@ val rt_substring(val s, val start, val end) {
 /* intern the string's bytes (NUL-terminated; safe for source identifiers) */
 val rt_string_to_symbol(val s) { return rt_intern(str_bytes(s)); }
 
+/* structural equality: eqv? fast path (immediates, interned symbols/chars, same
+ * object), then recurse into pairs and compare string content by bytes (UTF-8,
+ * so byte equality == codepoint equality).  Everything else is #f.  A vector arm
+ * is added when vectors land (see the vectors change). */
+val rt_equal(val a, val b) {
+  if (a == b) return TRUE_V;
+  if (tag_of(a) == TAG_PAIR && tag_of(b) == TAG_PAIR) {
+    if (rt_equal(as_ptr(a)[0], as_ptr(b)[0]) != TRUE_V) return FALSE_V;
+    return rt_equal(as_ptr(a)[1], as_ptr(b)[1]);
+  }
+  if (tag_of(a) == TAG_EXT && tag_of(b) == TAG_EXT &&
+      ext_hdr(a) == HDR_STRING && ext_hdr(b) == HDR_STRING) {
+    intptr_t la = str_len(a);
+    if (la != str_len(b)) return FALSE_V;
+    return truthy(memcmp(str_bytes(a), str_bytes(b), (size_t)la) == 0);
+  }
+  return FALSE_V;
+}
+
 /* --- value printer (tag-walking, design R1) ---------------------------- */
 void rt_write(val v) {
   switch (tag_of(v)) {

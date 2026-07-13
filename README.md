@@ -97,7 +97,8 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   `let*` — realized as `syntax-rules` macros in the prelude; named `let` (hand-written).
 - **Macros**: `define-syntax` + `syntax-rules` (literals, `_`, ellipsis), a fixpoint
   `expand` stage, hygienic for macro-introduced identifiers.
-- Arithmetic: n-ary `+ - *`. Comparisons: n-ary/chained `= < > <= >=` and `eq?` / `eqv?`.
+- Arithmetic: n-ary `+ - *`. Comparisons: n-ary/chained `= < > <= >=`, `eq?` / `eqv?`, and
+  structural `equal?`.
 - Variadic `lambda`, dotted rest parameters, `apply`, and runtime arity checking — on the
   uniform `argc`+`overflow` calling convention, preserving `musttail`.
 - `quote` of symbols and arbitrary nested structure.
@@ -106,13 +107,13 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 - Fixnums, booleans, `()`, pairs, closures, boxes; **interned symbols and characters**
   (`eq?` / `eqv?` by identity); **strings and characters** that are Unicode-capable (UTF-8
   storage, codepoint-indexed operations).
-- Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? not char->integer integer->char
-  string-length string-ref substring string->symbol`.
+- Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? equal? not char->integer
+  integer->char string-length string-ref substring string->symbol`.
 - C runtime under Boehm GC; a tag-walking value printer.
 
 **Library & reader**
 - A prelude prepended to every program (user-wins shadowing, `--no-prelude`):
-  `list length reverse append map memq assq`.
+  `list length reverse append map memq assq member assoc filter fold-left fold-right`.
 - `read-from-string` — a recursive-descent Scheme reader (integers, symbols, lists,
   `#t`/`#f`, `#\char`, `"strings"`, `'`-quote sugar, `;` comments).
 
@@ -128,7 +129,6 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 ## Not yet done
 
 **Near-term (additive)**
-- `equal?` (have `eq?` / `eqv?`) → then `member` / `assoc`; more list ops (`filter`, `fold`).
 - More string/char ops: `char=?`/`char<?`, `string=?`, `string-append`, `symbol->string`,
   `string->list`/`list->string`, `make-string`, string mutation.
 - Reader extensions: string escapes, named characters, dotted pairs, quasiquote, vectors.

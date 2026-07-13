@@ -109,7 +109,7 @@
   '((+ "rt_add") (- "rt_sub") (* "rt_mul") (= "rt_num_eq") (< "rt_lt")
     (cons "rt_cons") (car "rt_car") (cdr "rt_cdr")
     (null? "rt_null_p") (pair? "rt_pair_p") (eq? "rt_eq_p")
-    (eqv? "rt_eqv_p") (not "rt_not")
+    (eqv? "rt_eqv_p") (equal? "rt_equal") (not "rt_not")
     (box "rt_box") (unbox "rt_unbox") (set-box! "rt_set_box")
     (char->integer "rt_char_to_integer") (integer->char "rt_integer_to_char")
     (string-length "rt_string_length") (string-ref "rt_string_ref")
@@ -363,6 +363,7 @@
    "declare i64 @rt_pair_p(i64)\n"
    "declare i64 @rt_eq_p(i64, i64)\n"
    "declare i64 @rt_eqv_p(i64, i64)\n"
+   "declare i64 @rt_equal(i64, i64)\n"
    "declare i64 @rt_not(i64)\n"
    "declare i64 @rt_intern(ptr)\n"
    "declare i64 @rt_make_string(ptr, i64)\n"

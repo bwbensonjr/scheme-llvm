@@ -68,6 +68,13 @@ so they live in `prelude.scm`, mirroring `memq`/`assq`:
 `fold-left` is written tail-recursively (accumulator threaded, `musttail` on the recursive
 call); `fold-right` is naturally non-tail. Both take a single list argument in this change.
 
+Note — primitives are not first-class in this compiler: reserved primitive names (`-`,
+`cons`, `+`, …) are only valid in operator position, not as values passed to a higher-order
+procedure. So higher-order use requires a lambda wrapper, e.g. `(fold-left (lambda (a b) (- a b)) 0 xs)`
+rather than `(fold-left - 0 xs)`. This is a pre-existing property of the compiler, not
+introduced here; it just surfaces the first time folds take a combining procedure. Lifting
+it (eta-expanding primitives into callable closures) is out of scope for this change.
+
 ### D3 — Fold naming: `fold-left` / `fold-right` (R6RS)
 
 The README says "fold" generically. We adopt the R6RS pair `fold-left` / `fold-right` rather

@@ -8,7 +8,7 @@
 ;;;
 ;;; Primitive names are reserved keywords (not rebindable) in the M1 subset.
 
-(define *prims* '(+ - * = < cons car cdr null? pair? eq? eqv? not
+(define *prims* '(+ - * = < cons car cdr null? pair? eq? eqv? equal? not
                   char->integer integer->char
                   string-length string-ref substring string->symbol))
 (define (prim? op) (and (memq op *prims*) #t))

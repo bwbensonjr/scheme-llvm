@@ -74,6 +74,7 @@ check struni  demos/string-unicode.scm '(5 #\é "日本")'         # codepoint-i
 
 echo "prelude demos"
 check prelude demos/prelude.scm        '(1 4 9 6 5 4)'  # standard library: list/map/reverse/append
+check equallist demos/equal-list.scm   '(1 1 0 ((2) (3)) ("b" . 2) (2 3 4) -6 (1 2 3))'  # equal? + member/assoc/filter/fold
 
 echo "reader demos"
 check rdlist  demos/reader-list.scm    '(a (b c) 42)'         # read a nested list
