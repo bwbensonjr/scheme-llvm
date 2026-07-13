@@ -92,6 +92,26 @@
 (define (fold-right f acc xs)
   (if (null? xs) acc (f (car xs) (fold-right f acc (cdr xs)))))
 
+;;; --- character / string library (string-char-library) ---------------------
+;;; char comparisons are n-ary and chained, reducing through char->integer and
+;;; the numeric comparisons.  `op` is a lambda wrapper (primitives are not
+;;; first-class, so we cannot pass = / < directly); chr-cmp recurses over the
+;;; user-defined comparison chain.
+(define (chr-cmp op a b rest)
+  (if (op (char->integer a) (char->integer b))
+      (if (null? rest) #t (chr-cmp op b (car rest) (cdr rest)))
+      #f))
+(define (char=?  a b . rest) (chr-cmp (lambda (x y) (=  x y)) a b rest))
+(define (char<?  a b . rest) (chr-cmp (lambda (x y) (<  x y)) a b rest))
+(define (char>?  a b . rest) (chr-cmp (lambda (x y) (>  x y)) a b rest))
+(define (char<=? a b . rest) (chr-cmp (lambda (x y) (<= x y)) a b rest))
+(define (char>=? a b . rest) (chr-cmp (lambda (x y) (>= x y)) a b rest))
+
+;; string->list: codepoint-indexed, built from the end so the list is in order.
+(define (string->list s)
+  (let loop ([i (- (string-length s) 1)] [acc (quote ())])
+    (if (< i 0) acc (loop (- i 1) (cons (string-ref s i) acc)))))
+
 ;;; --- reader (scheme-reader): read-from-string source text -> datum --------
 ;;; Recursive descent over a string; the scan position is threaded functionally
 ;;; as (datum . next-index) pairs.  Characters are classified by codepoint

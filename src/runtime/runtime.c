@@ -319,6 +319,46 @@ val rt_substring(val s, val start, val end) {
 /* intern the string's bytes (NUL-terminated; safe for source identifiers) */
 val rt_string_to_symbol(val s) { return rt_intern(str_bytes(s)); }
 
+/* --- string construction/comparison (string-char-library) --------------- */
+/* content equality: equal byte length + equal bytes (UTF-8 => byte equality
+ * is codepoint equality). */
+val rt_string_eq(val a, val b) {
+  intptr_t la = str_len(a);
+  if (la != str_len(b)) return FALSE_V;
+  return truthy(memcmp(str_bytes(a), str_bytes(b), (size_t)la) == 0);
+}
+/* new string = a's bytes followed by b's bytes. */
+val rt_string_append(val a, val b) {
+  intptr_t la = str_len(a), lb = str_len(b);
+  char *buf = (char *)GC_MALLOC_ATOMIC((size_t)(la + lb + 1));
+  memcpy(buf, str_bytes(a), (size_t)la);
+  memcpy(buf + la, str_bytes(b), (size_t)lb);
+  return rt_make_string(buf, la + lb);
+}
+/* a symbol's name as a fresh string. */
+val rt_symbol_to_string(val s) {
+  const char *name = sym_name(s);
+  return rt_make_string(name, (intptr_t)strlen(name));
+}
+/* build a string from a list of characters, UTF-8-encoding each codepoint. */
+val rt_list_to_string(val lst) {
+  intptr_t n = rt_list_length(lst);
+  char *buf = (char *)GC_MALLOC_ATOMIC((size_t)(4 * n + 1));  /* <=4 bytes/codepoint */
+  intptr_t off = 0;
+  for (val cur = lst; tag_of(cur) == TAG_PAIR; cur = as_ptr(cur)[1])
+    off += utf8_encode(char_cp(as_ptr(cur)[0]), (unsigned char *)(buf + off));
+  return rt_make_string(buf, off);
+}
+/* a string of k copies of character ch. */
+val rt_make_string_fill(val k, val ch) {
+  intptr_t n = UNFIX(k);
+  unsigned char one[4];
+  int len1 = utf8_encode(char_cp(ch), one);
+  char *buf = (char *)GC_MALLOC_ATOMIC((size_t)(len1 * n + 1));
+  for (intptr_t i = 0; i < n; i++) memcpy(buf + i * len1, one, (size_t)len1);
+  return rt_make_string(buf, len1 * n);
+}
+
 /* structural equality: eqv? fast path (immediates, interned symbols/chars, same
  * object), then recurse into pairs and compare string content by bytes (UTF-8,
  * so byte equality == codepoint equality).  Everything else is #f.  A vector arm

@@ -10,7 +10,8 @@
 
 (define *prims* '(+ - * = < cons car cdr null? pair? eq? eqv? equal? not
                   char->integer integer->char
-                  string-length string-ref substring string->symbol))
+                  string-length string-ref substring string->symbol
+                  string=? string-append symbol->string list->string make-string))
 (define (prim? op) (and (memq op *prims*) #t))
 
 ;; ---- variadic parameter lists ----

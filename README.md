@@ -108,12 +108,14 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   (`eq?` / `eqv?` by identity); **strings and characters** that are Unicode-capable (UTF-8
   storage, codepoint-indexed operations).
 - Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? equal? not char->integer
-  integer->char string-length string-ref substring string->symbol`.
+  integer->char string-length string-ref substring string->symbol string=? string-append
+  symbol->string list->string make-string`.
 - C runtime under Boehm GC; a tag-walking value printer.
 
 **Library & reader**
 - A prelude prepended to every program (user-wins shadowing, `--no-prelude`):
-  `list length reverse append map memq assq member assoc filter fold-left fold-right`.
+  `list length reverse append map memq assq member assoc filter fold-left fold-right`,
+  the n-ary character comparisons `char=? char<? char>? char<=? char>=?`, and `string->list`.
 - `read-from-string` — a recursive-descent Scheme reader (integers, symbols, lists,
   `#t`/`#f`, `#\char`, `"strings"`, `'`-quote sugar, `;` comments).
 
@@ -129,8 +131,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 ## Not yet done
 
 **Near-term (additive)**
-- More string/char ops: `char=?`/`char<?`, `string=?`, `string-append`, `symbol->string`,
-  `string->list`/`list->string`, `make-string`, string mutation.
+- String mutation: `string-set!` (and `string-copy`) — the one deferred string op.
 - Reader extensions: string escapes, named characters, dotted pairs, quasiquote, vectors.
 
 **Larger language features**

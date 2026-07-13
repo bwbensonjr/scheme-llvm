@@ -113,7 +113,10 @@
     (box "rt_box") (unbox "rt_unbox") (set-box! "rt_set_box")
     (char->integer "rt_char_to_integer") (integer->char "rt_integer_to_char")
     (string-length "rt_string_length") (string-ref "rt_string_ref")
-    (substring "rt_substring") (string->symbol "rt_string_to_symbol")))
+    (substring "rt_substring") (string->symbol "rt_string_to_symbol")
+    (string=? "rt_string_eq") (string-append "rt_string_append")
+    (symbol->string "rt_symbol_to_string") (list->string "rt_list_to_string")
+    (make-string "rt_make_string_fill")))
 
 ;; --- string helpers ---
 (define (comma-join lst)
@@ -374,6 +377,11 @@
    "declare i64 @rt_string_ref(i64, i64)\n"
    "declare i64 @rt_substring(i64, i64, i64)\n"
    "declare i64 @rt_string_to_symbol(i64)\n"
+   "declare i64 @rt_string_eq(i64, i64)\n"
+   "declare i64 @rt_string_append(i64, i64)\n"
+   "declare i64 @rt_symbol_to_string(i64)\n"
+   "declare i64 @rt_list_to_string(i64)\n"
+   "declare i64 @rt_make_string_fill(i64, i64)\n"
    "declare i64 @rt_list_length(i64)\n"
    "declare i64 @rt_build_rest(i64, i64, i64, ptr, ptr)\n"
    "declare ptr @rt_apply_argv(i64, ptr, i64, i64)\n"
