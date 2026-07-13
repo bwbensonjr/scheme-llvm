@@ -183,37 +183,93 @@
     (let ([tok (substring s i j)])
       (cons (if (rd-numeric? tok) (rd-parse-int tok) (string->symbol tok)) j))))
 
-(define (rd-scan-quote s n i)            ; index of the next " (or n)
+(define (rd-hex-digit c)                 ; hex char -> value (0 for non-hex)
+  (let ([k (char->integer c)])
+    (cond
+      [(and (< 47 k) (< k 58)) (- k 48)]      ; 0-9
+      [(and (< 96 k) (< k 103)) (- k 87)]     ; a-f
+      [(and (< 64 k) (< k 71)) (- k 55)]      ; A-F
+      [else 0])))
+(define (rd-hex s n i acc)               ; \xHH...; -> (codepoint . index-past-;)
   (if (< i n)
-      (if (= (char->integer (string-ref s i)) 34) i (rd-scan-quote s n (+ i 1)))
-      i))
-(define (rd-string s n i)                ; i just past opening "; contents verbatim
-  (let ([j (rd-scan-quote s n i)])
-    (cons (substring s i j) (+ j 1))))
+      (if (= (char->integer (string-ref s i)) 59)     ; ;
+          (cons acc (+ i 1))
+          (rd-hex s n (+ i 1) (+ (* acc 16) (rd-hex-digit (string-ref s i)))))
+      (cons acc i)))
+(define (rd-str-esc c)                   ; escape letter -> the character it denotes
+  (let ([k (char->integer c)])
+    (cond
+      [(= k 110) (integer->char 10)]     ; \n
+      [(= k 116) (integer->char 9)]      ; \t
+      [(= k 114) (integer->char 13)]     ; \r
+      [else c])))                        ; \\ \" and any other: the char itself
+(define (rd-string s n i)                ; i just past opening "; decodes escapes
+  (let loop ([i i] [acc (quote ())])
+    (if (< i n)
+        (let* ([c (string-ref s i)] [k (char->integer c)])
+          (cond
+            [(= k 34) (cons (list->string (reverse acc)) (+ i 1))]        ; closing "
+            [(= k 92)                                                     ; backslash escape
+             (let ([e (string-ref s (+ i 1))])
+               (if (= (char->integer e) 120)                             ; \xHH;
+                   (let ([hx (rd-hex s n (+ i 2) 0)])
+                     (loop (cdr hx) (cons (integer->char (car hx)) acc)))
+                   (loop (+ i 2) (cons (rd-str-esc e) acc))))]            ; \n \t \r \\ \"
+            [else (loop (+ i 1) (cons c acc))]))
+        (cons (list->string (reverse acc)) i))))
 
 (define (rd-hash s n i)                  ; i just past #
   (let ([k (char->integer (string-ref s i))])
     (cond
       [(= k 116) (cons #t (+ i 1))]                        ; #t
       [(= k 102) (cons #f (+ i 1))]                        ; #f
-      [(= k 92) (cons (string-ref s (+ i 1)) (+ i 2))]     ; #\<char>
+      [(= k 92) (rd-char s n i)]                           ; #\<char> or #\<name>
       [(= k 40) (let ([r (rd-list s n (+ i 1) (quote ()))])  ; #( ... ) -> vector
                   (cons (list->vector (car r)) (cdr r)))]
       [else (let ([j (rd-token-end s n i)])
               (cons (string->symbol (substring s i j)) j))])))
+
+(define (rd-char-name tok)               ; multi-char #\ name -> character
+  (cond
+    [(string=? tok "space")   (integer->char 32)]
+    [(string=? tok "newline") (integer->char 10)]
+    [(string=? tok "tab")     (integer->char 9)]
+    [(string=? tok "return")  (integer->char 13)]
+    [(string=? tok "nul")     (integer->char 0)]
+    [(string=? tok "null")    (integer->char 0)]
+    [(string=? tok "delete")  (integer->char 127)]
+    [(string=? tok "altmode") (integer->char 27)]
+    [(string=? tok "esc")     (integer->char 27)]
+    [else (string-ref tok 0)]))          ; unknown name: first char (undefined per spec)
+(define (rd-char s n i)                  ; i at '\' of #\ ; content at i+1
+  (let* ([cs (+ i 1)]
+         [end (rd-token-end s n (+ cs 1))]   ; force the first content char in
+         [tok (substring s cs end)])
+    (if (= (string-length tok) 1)
+        (cons (string-ref s cs) end)         ; single-character literal
+        (cons (rd-char-name tok) end))))     ; named character
 
 (define (rd-quote s n i)                 ; 'x -> (quote x)
   (let ([j (rd-skip-ws s n i)])
     (let ([r (rd-datum s n j)])
       (cons (list (quote quote) (car r)) (cdr r)))))
 
-(define (rd-list s n i acc)              ; i after (; read until )
+(define (rd-dot? s n j)                  ; a standalone `.` token at j (dotted-pair marker)
+  (and (= (char->integer (string-ref s j)) 46)      ; .
+       (= (rd-token-end s n (+ j 1)) (+ j 1))))      ; next char is a delimiter -> lone .
+(define (rd-append-reverse acc tail)     ; (reverse acc) terminated by tail (improper list)
+  (if (null? acc) tail (rd-append-reverse (cdr acc) (cons (car acc) tail))))
+(define (rd-list s n i acc)              ; i after (; read until ) (supports . tail)
   (let ([j (rd-skip-ws s n i)])
     (if (< j n)
-        (if (= (char->integer (string-ref s j)) 41)
-            (cons (reverse acc) (+ j 1))
-            (let ([r (rd-datum s n j)])
-              (rd-list s n (cdr r) (cons (car r) acc))))
+        (cond
+          [(= (char->integer (string-ref s j)) 41) (cons (reverse acc) (+ j 1))]   ; )
+          [(rd-dot? s n j)                                                          ; . tail
+           (let* ([r (rd-datum s n (rd-skip-ws s n (+ j 1)))]
+                  [j2 (rd-skip-ws s n (cdr r))])
+             (cons (rd-append-reverse acc (car r)) (+ j2 1)))]                      ; past )
+          [else (let ([r (rd-datum s n j)])
+                  (rd-list s n (cdr r) (cons (car r) acc)))])
         (cons (reverse acc) j))))
 
 (define (rd-datum s n i)                 ; i at a non-ws char -> (datum . next)

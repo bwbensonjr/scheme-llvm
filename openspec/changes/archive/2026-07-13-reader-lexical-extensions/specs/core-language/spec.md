@@ -1,10 +1,14 @@
 ## MODIFIED Requirements
 
-### Requirement: In-language reader (`read-from-string`)
+### Requirement: Read data from source text
 
-The compiler SHALL provide `read-from-string`, a reader that parses Scheme source text into a
-datum. It SHALL read integers, symbols, lists, `#t`/`#f`, character literals, string literals,
-and `'`-quote sugar, skipping whitespace and `;` line comments.
+The compiler SHALL provide `read-from-string`, which parses a source string and returns the
+first datum it contains. The reader SHALL recognize integers (optionally signed), symbols,
+the empty list, proper lists `( … )` and dotted/improper lists `( … . x)`, booleans
+`#t`/`#f`, characters `#\x` (single codepoint) and named characters, strings `" … "` with
+escape sequences, `#(...)` vectors, and `'`-quote sugar (`'x` reads as `(quote x)`), skipping
+interleaved whitespace and `;` line comments. Symbols SHALL be interned (a read symbol is
+`eq?` to the same-named literal).
 
 String literals SHALL support the escape sequences `\n` (newline), `\t` (tab), `\r` (return),
 `\\` (backslash), `\"` (double quote), and `\xHH…;` (a hexadecimal Unicode codepoint
@@ -20,6 +24,28 @@ parentheses SHALL produce an improper list whose tail is the datum following the
 
 Malformed input for these extensions (an unrecognized escape, an unknown character name, or a
 misplaced `.`) is undefined for this subset.
+
+#### Scenario: Read a nested list
+
+- **WHEN** a program evaluates `(read-from-string "(a (b c) 42)")`
+- **THEN** the result is the list `(a (b c) 42)` — the symbol `a`, the list `(b c)`, and the
+  fixnum `42`
+
+#### Scenario: Read atoms of each type
+
+- **WHEN** a program reads `"42"`, `"hello"`, `"#t"`, `"#\\z"`, and `"\"hi\""`
+- **THEN** the results are the fixnum `42`, the symbol `hello`, the boolean `#t`, the
+  character `#\z`, and the string `"hi"`
+
+#### Scenario: Read symbols are interned
+
+- **WHEN** a program evaluates `(eq? (read-from-string "foo") (quote foo))`
+- **THEN** the result is `#t`
+
+#### Scenario: Quote sugar and comments
+
+- **WHEN** a program evaluates `(read-from-string "; a comment\n 'x")`
+- **THEN** the comment is skipped and the result is the list `(quote x)`
 
 #### Scenario: String escape sequences
 

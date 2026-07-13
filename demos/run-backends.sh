@@ -98,6 +98,7 @@ run3 rdlist    demos/reader-list.scm      '(a (b c) 42)'            # reader: ne
 run3 rdatoms   demos/reader-atoms.scm     '(42 hello #t #\z "hi")'  # reader: atom types
 run3 rdeq      demos/reader-eq.scm        '#t'                      # reader: interned symbol
 run3 rdquote   demos/reader-quote.scm     '(quote x)'               # reader: comment + quote
+run3 rdlex     demos/reader-lexical.scm   '(3 9 65 32 10 (a . b) (x y . z))'  # reader: escapes, named chars, dotted pairs
 run3 macrouser demos/macro-user.scm       '(3 10 10 11)'            # define-syntax + ellipsis
 run3 macrohyg  demos/macro-hygiene.scm    '(2 1 99 5 5)'            # macro hygiene
 

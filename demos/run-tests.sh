@@ -83,6 +83,7 @@ check rdlist  demos/reader-list.scm    '(a (b c) 42)'         # read a nested li
 check rdatoms demos/reader-atoms.scm   '(42 hello #t #\z "hi")'  # each atom type
 check rdeq    demos/reader-eq.scm      '#t'                   # read symbol interned (eq? literal)
 check rdquote demos/reader-quote.scm   '(quote x)'            # comment skipped + quote sugar
+check rdlex   demos/reader-lexical.scm '(3 9 65 32 10 (a . b) (x y . z))'  # escapes, named chars, dotted pairs
 
 echo "macro demos"
 check macrouser demos/macro-user.scm    '(3 10 10 11)'  # define-syntax: swap!/ellipsis/my-let

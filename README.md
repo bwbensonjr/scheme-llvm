@@ -117,7 +117,9 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   `list length reverse append map memq assq member assoc filter fold-left fold-right`,
   the n-ary character comparisons `char=? char<? char>? char<=? char>=?`, and `string->list`.
 - `read-from-string` — a recursive-descent Scheme reader (integers, symbols, lists,
-  `#t`/`#f`, `#\char`, `"strings"`, `#(...)` vectors, `'`-quote sugar, `;` comments).
+  dotted/improper lists, `#t`/`#f`, characters incl. named `#\newline`/`#\space`/…,
+  `"strings"` with `\n`/`\t`/`\r`/`\\`/`\"`/`\xHH;` escapes, `#(...)` vectors, `'`-quote
+  sugar, `;` comments).
 
 **Backends & process**
 - AOT / JIT / bitcode from one emitted `.ll`, with a 3-way equivalence harness.
@@ -132,7 +134,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 
 **Near-term (additive)**
 - String mutation: `string-set!` (and `string-copy`) — the one deferred string op.
-- Reader extensions: string escapes, named characters, dotted pairs, quasiquote.
+- Reader/derived form: `quasiquote` (`` ` ``/`,`/`,@`).
 
 **Larger language features**
 - **Macros (follow-ons)** — `let-syntax`/`letrec-syntax` (local macros), procedural /
