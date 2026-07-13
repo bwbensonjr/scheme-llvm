@@ -93,6 +93,7 @@ run3 struni    demos/string-unicode.scm  '(5 #\é "日本")'         # codepoint
 run3 strchlib  demos/string-char-lib.scm '(#t #f #t #f "foobar" "xxx" (#\a #\b) "héllo")'  # char cmp + string ctor library
 run3 prelude   demos/prelude.scm          '(1 4 9 6 5 4)'  # standard library procedures
 run3 equallist demos/equal-list.scm       '(1 1 0 ((2) (3)) ("b" . 2) (2 3 4) -6 (1 2 3))'  # equal? + member/assoc/filter/fold
+run3 vectors   demos/vectors.scm          '(20 4 99 #t #f #(1 2 3) #t #f 9)'  # vector type: ops + printer + #(...) reader, survives GC under lli
 run3 rdlist    demos/reader-list.scm      '(a (b c) 42)'            # reader: nested list
 run3 rdatoms   demos/reader-atoms.scm     '(42 hello #t #\z "hi")'  # reader: atom types
 run3 rdeq      demos/reader-eq.scm        '#t'                      # reader: interned symbol

@@ -48,6 +48,7 @@ char rt_trap_msg[128] = "";
  * live under tag 7 and are discriminated by this header word) */
 #define HDR_STRING  0
 #define HDR_CHAR    1
+#define HDR_VECTOR  2   /* { HDR_VECTOR, length, elem0, ... } */
 
 #define FIX(n)     ((val)(((intptr_t)(n)) << 3))
 #define UNFIX(v)   (((intptr_t)(v)) >> 3)
@@ -359,21 +360,45 @@ val rt_make_string_fill(val k, val ch) {
   return rt_make_string(buf, len1 * n);
 }
 
+/* --- vectors (tag-7 HDR_VECTOR: { HDR_VECTOR, length, elem... }) --------- */
+static intptr_t vec_len(val v) { return (intptr_t)as_ptr(v)[1]; }
+val rt_make_vector(val k, val fill) {
+  intptr_t n = UNFIX(k);
+  val *p = (val *)GC_MALLOC((size_t)(n + 2) * sizeof(val));
+  p[0] = (val)HDR_VECTOR; p[1] = (val)n;
+  for (intptr_t i = 0; i < n; i++) p[i + 2] = fill;
+  return tag_ptr(p, TAG_EXT);
+}
+val rt_vector_ref(val v, val i)        { return as_ptr(v)[2 + UNFIX(i)]; }
+val rt_vector_set(val v, val i, val x) { as_ptr(v)[2 + UNFIX(i)] = x; return NIL_V; }
+val rt_vector_length(val v)            { return FIX(vec_len(v)); }
+val rt_vector_p(val v) {
+  return truthy(tag_of(v) == TAG_EXT && ext_hdr(v) == HDR_VECTOR);
+}
+
 /* structural equality: eqv? fast path (immediates, interned symbols/chars, same
- * object), then recurse into pairs and compare string content by bytes (UTF-8,
- * so byte equality == codepoint equality).  Everything else is #f.  A vector arm
- * is added when vectors land (see the vectors change). */
+ * object), then recurse into pairs, compare string content by bytes (UTF-8, so
+ * byte equality == codepoint equality), and recurse element-wise into vectors.
+ * Everything else is #f. */
 val rt_equal(val a, val b) {
   if (a == b) return TRUE_V;
   if (tag_of(a) == TAG_PAIR && tag_of(b) == TAG_PAIR) {
     if (rt_equal(as_ptr(a)[0], as_ptr(b)[0]) != TRUE_V) return FALSE_V;
     return rt_equal(as_ptr(a)[1], as_ptr(b)[1]);
   }
-  if (tag_of(a) == TAG_EXT && tag_of(b) == TAG_EXT &&
-      ext_hdr(a) == HDR_STRING && ext_hdr(b) == HDR_STRING) {
-    intptr_t la = str_len(a);
-    if (la != str_len(b)) return FALSE_V;
-    return truthy(memcmp(str_bytes(a), str_bytes(b), (size_t)la) == 0);
+  if (tag_of(a) == TAG_EXT && tag_of(b) == TAG_EXT) {
+    if (ext_hdr(a) == HDR_STRING && ext_hdr(b) == HDR_STRING) {
+      intptr_t la = str_len(a);
+      if (la != str_len(b)) return FALSE_V;
+      return truthy(memcmp(str_bytes(a), str_bytes(b), (size_t)la) == 0);
+    }
+    if (ext_hdr(a) == HDR_VECTOR && ext_hdr(b) == HDR_VECTOR) {
+      intptr_t la = vec_len(a);
+      if (la != vec_len(b)) return FALSE_V;
+      for (intptr_t i = 0; i < la; i++)
+        if (rt_equal(as_ptr(a)[i + 2], as_ptr(b)[i + 2]) != TRUE_V) return FALSE_V;
+      return TRUE_V;
+    }
   }
   return FALSE_V;
 }
@@ -417,6 +442,16 @@ void rt_write(val v) {
             printf("#\\");
             fwrite(buf, 1, (size_t)n, stdout);
           }
+          break;
+        }
+        case HDR_VECTOR: {
+          intptr_t len = (intptr_t)as_ptr(v)[1];
+          printf("#(");
+          for (intptr_t i = 0; i < len; i++) {
+            if (i) putchar(' ');
+            rt_write(as_ptr(v)[i + 2]);
+          }
+          putchar(')');
           break;
         }
         default: printf("#<ext:%ld>", (long)ext_hdr(v));

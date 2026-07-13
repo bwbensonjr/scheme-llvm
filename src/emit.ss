@@ -116,7 +116,10 @@
     (substring "rt_substring") (string->symbol "rt_string_to_symbol")
     (string=? "rt_string_eq") (string-append "rt_string_append")
     (symbol->string "rt_symbol_to_string") (list->string "rt_list_to_string")
-    (make-string "rt_make_string_fill")))
+    (make-string "rt_make_string_fill")
+    (make-vector "rt_make_vector") (vector-ref "rt_vector_ref")
+    (vector-set! "rt_vector_set") (vector-length "rt_vector_length")
+    (vector? "rt_vector_p")))
 
 ;; --- string helpers ---
 (define (comma-join lst)
@@ -382,6 +385,11 @@
    "declare i64 @rt_symbol_to_string(i64)\n"
    "declare i64 @rt_list_to_string(i64)\n"
    "declare i64 @rt_make_string_fill(i64, i64)\n"
+   "declare i64 @rt_make_vector(i64, i64)\n"
+   "declare i64 @rt_vector_ref(i64, i64)\n"
+   "declare i64 @rt_vector_set(i64, i64, i64)\n"
+   "declare i64 @rt_vector_length(i64)\n"
+   "declare i64 @rt_vector_p(i64)\n"
    "declare i64 @rt_list_length(i64)\n"
    "declare i64 @rt_build_rest(i64, i64, i64, ptr, ptr)\n"
    "declare ptr @rt_apply_argv(i64, ptr, i64, i64)\n"

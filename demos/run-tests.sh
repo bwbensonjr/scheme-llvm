@@ -76,6 +76,7 @@ check strchlib demos/string-char-lib.scm '(#t #f #t #f "foobar" "xxx" (#\a #\b) 
 echo "prelude demos"
 check prelude demos/prelude.scm        '(1 4 9 6 5 4)'  # standard library: list/map/reverse/append
 check equallist demos/equal-list.scm   '(1 1 0 ((2) (3)) ("b" . 2) (2 3 4) -6 (1 2 3))'  # equal? + member/assoc/filter/fold
+check vectors  demos/vectors.scm       '(20 4 99 #t #f #(1 2 3) #t #f 9)'  # vector type + ops + printer + #(...) reader
 
 echo "reader demos"
 check rdlist  demos/reader-list.scm    '(a (b c) 42)'         # read a nested list

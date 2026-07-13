@@ -106,7 +106,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 **Data & runtime**
 - Fixnums, booleans, `()`, pairs, closures, boxes; **interned symbols and characters**
   (`eq?` / `eqv?` by identity); **strings and characters** that are Unicode-capable (UTF-8
-  storage, codepoint-indexed operations).
+  storage, codepoint-indexed operations); **vectors** (mutable, fixed-length, `#(...)` syntax).
 - Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? equal? not char->integer
   integer->char string-length string-ref substring string->symbol string=? string-append
   symbol->string list->string make-string`.
@@ -117,7 +117,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   `list length reverse append map memq assq member assoc filter fold-left fold-right`,
   the n-ary character comparisons `char=? char<? char>? char<=? char>=?`, and `string->list`.
 - `read-from-string` — a recursive-descent Scheme reader (integers, symbols, lists,
-  `#t`/`#f`, `#\char`, `"strings"`, `'`-quote sugar, `;` comments).
+  `#t`/`#f`, `#\char`, `"strings"`, `#(...)` vectors, `'`-quote sugar, `;` comments).
 
 **Backends & process**
 - AOT / JIT / bitcode from one emitted `.ll`, with a 3-way equivalence harness.
@@ -132,7 +132,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 
 **Near-term (additive)**
 - String mutation: `string-set!` (and `string-copy`) — the one deferred string op.
-- Reader extensions: string escapes, named characters, dotted pairs, quasiquote, vectors.
+- Reader extensions: string escapes, named characters, dotted pairs, quasiquote.
 
 **Larger language features**
 - **Macros (follow-ons)** — `let-syntax`/`letrec-syntax` (local macros), procedural /
@@ -141,7 +141,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 - **Numeric tower** — fixnums only; no bignums/flonums/rationals, no `quotient`/`remainder`/
   `/`, no overflow handling.
 - **Control**: `call/cc`, `values`/`call-with-values`, exceptions/`guard`, `dynamic-wind`.
-- **Data**: vectors, bytevectors, hash tables, records.
+- **Data**: bytevectors, hash tables, records (vectors done).
 - **I/O**: ports, files, `read` from stdin, `display`/`write` as procedures.
 - Recoverable error handling: arity errors are isolated in the REPL host (the session
   survives) but still abort the standalone AOT/JIT executables; no general condition system.

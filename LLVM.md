@@ -155,6 +155,12 @@ literals emit `rt_make_char(codepoint)`. Strings/chars are **not interned** — 
 lists they carry no `eq?` identity (deferred with `eqv?` and the string/char operation
 library, which also owns the byte-vs-codepoint length/indexing decision).
 
+**Vectors (tag 7, header-word).** A vector is an extended object
+`{HDR_VECTOR, length, elem0, …}` — mutable and fixed-length, each element a tagged `i64`.
+`rt_make_vector`/`rt_vector_ref`/`rt_vector_set`/`rt_vector_length`/`rt_vector_p` are the
+primitives; the `vector` constructor and `list->vector` are prelude Scheme. `rt_write` prints
+`#(e0 e1 …)` and the reader reads `#(…)`. `rt_equal` recurses element-wise into vectors.
+
 **Quoted structure is materialized at runtime.** `(quote sym)` emits a private
 string-constant global (`@.str.sym.N = private … c"name\00"`) plus a per-use
 `rt_intern` call; `(quote (a . d))` emits `rt_cons` over the recursively encoded car/cdr,

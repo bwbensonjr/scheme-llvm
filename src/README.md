@@ -79,6 +79,7 @@ discriminated by a header code in their first word:
 |-------------|-----------|--------|
 | 0 (`HDR_STRING`) | string    | `{hdr, byte-length, char *bytes}` — UTF-8, explicit length |
 | 1 (`HDR_CHAR`)   | character | `{hdr, codepoint}` — full Unicode scalar value |
+| 2 (`HDR_VECTOR`) | vector    | `{hdr, length, elem0, …}` — mutable, fixed-length |
 
 ## Calling convention
 

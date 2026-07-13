@@ -112,6 +112,17 @@
   (let loop ([i (- (string-length s) 1)] [acc (quote ())])
     (if (< i 0) acc (loop (- i 1) (cons (string-ref s i) acc)))))
 
+;;; --- vector constructors (vectors change) ---------------------------------
+;;; make-vector/vector-ref/vector-set!/vector-length/vector? are primitives;
+;;; the variadic constructor and list conversion are prelude Scheme over them.
+(define (list->vector xs)
+  (let ([v (make-vector (length xs) 0)])
+    (let loop ([xs xs] [i 0])
+      (if (null? xs)
+          v
+          (begin (vector-set! v i (car xs)) (loop (cdr xs) (+ i 1)))))))
+(define (vector . xs) (list->vector xs))
+
 ;;; --- reader (scheme-reader): read-from-string source text -> datum --------
 ;;; Recursive descent over a string; the scan position is threaded functionally
 ;;; as (datum . next-index) pairs.  Characters are classified by codepoint
@@ -186,6 +197,8 @@
       [(= k 116) (cons #t (+ i 1))]                        ; #t
       [(= k 102) (cons #f (+ i 1))]                        ; #f
       [(= k 92) (cons (string-ref s (+ i 1)) (+ i 2))]     ; #\<char>
+      [(= k 40) (let ([r (rd-list s n (+ i 1) (quote ()))])  ; #( ... ) -> vector
+                  (cons (list->vector (car r)) (cdr r)))]
       [else (let ([j (rd-token-end s n i)])
               (cons (string->symbol (substring s i j)) j))])))
 
