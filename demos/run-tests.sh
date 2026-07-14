@@ -87,6 +87,7 @@ check rdatoms demos/reader-atoms.scm   '(42 hello #t #\z "hi")'  # each atom typ
 check rdeq    demos/reader-eq.scm      '#t'                   # read symbol interned (eq? literal)
 check rdquote demos/reader-quote.scm   '(quote x)'            # comment skipped + quote sugar
 check rdlex   demos/reader-lexical.scm '(3 9 65 32 10 (a . b) (x y . z))'  # escapes, named chars, dotted pairs
+check rdall   demos/read-all.scm '(((define x 1) (define y 2) (+ x y)) ((define a 1) (b c)) ())'  # read-all-from-string: whole-program read
 
 echo "macro demos"
 check macrouser demos/macro-user.scm    '(3 10 10 11)'  # define-syntax: swap!/ellipsis/my-let

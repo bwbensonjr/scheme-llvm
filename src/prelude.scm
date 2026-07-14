@@ -364,3 +364,17 @@
 (define (read-from-string s)
   (let ([n (string-length s)])
     (car (rd-datum s n (rd-skip-ws s n 0)))))
+
+;;; --- whole-program read (stdin-source-reader) -----------------------------
+;;; Loop the single-datum reader across the whole source: skip inter-form
+;;; whitespace/; comments, read a datum, continue from the next position, and
+;;; stop at end of input.  Returns the top-level forms in source order (the empty
+;;; list for empty or whitespace/comment-only input).  This is what a self-hosted
+;;; core uses to turn its input text into the form list it compiles.
+(define (read-all-from-string s)
+  (let ([n (string-length s)])
+    (let loop ([i (rd-skip-ws s n 0)] [acc (quote ())])
+      (if (< i n)
+          (let ([r (rd-datum s n i)])
+            (loop (rd-skip-ws s n (cdr r)) (cons (car r) acc)))
+          (reverse acc)))))
