@@ -608,15 +608,25 @@ void rt_write(val v) {
 /* --- entry: exit code = ran/failed, stdout = value (design R1) ----------
  * The standalone AOT/JIT executables use this main.  The persistent REPL host
  * provides its own main and drives scheme code itself, so it compiles the
- * runtime with -DRT_NO_MAIN to omit this (and the scheme_entry it expects). */
+ * runtime with -DRT_NO_MAIN to omit this (and the scheme_entry it expects).
+ *
+ * -DRT_FILTER_MAIN builds a *filter* main that runs the program purely for its
+ * effects and suppresses the final-value print.  A text filter (e.g. the
+ * self-hosted `schemec`, whose entry is `(display (compile-source-string
+ * (read-all-stdin)))`) does its own output via `display`; printing the entry's
+ * value afterward would append `()\n` and corrupt the output stream. */
 #ifndef RT_NO_MAIN
 extern val scheme_entry(void);
 
 int main(void) {
   GC_INIT();
+#ifdef RT_FILTER_MAIN
+  scheme_entry();          /* run for effect; the program handles its own I/O */
+#else
   val result = scheme_entry();
   rt_write(result);
   printf("\n");
+#endif
   return 0;
 }
 #endif

@@ -23,7 +23,15 @@
 
 (import (chezscheme))
 
-(define out-path "build/core-self.scm")
+;; With --filter-main, emit the self-hosted `schemec` program: the same
+;; assembled core but ending in the stdin->stdout filter entry
+;; `(display (compile-source-string (read-all-stdin)))`, written to
+;; build/schemec.scm (self-hosting-bootstrap task 2.1).  Without it, emit the
+;; sweep's sanity program (trailing `(compile-source-string "(+ 1 2)")`) to
+;; build/core-self.scm, unchanged.
+(define filter-main? (and (member "--filter-main" (command-line-arguments)) #t))
+
+(define out-path (if filter-main? "build/schemec.scm" "build/core-self.scm"))
 
 ;; ---- source layout -------------------------------------------------------
 (define pass-files
@@ -125,11 +133,21 @@
         [else (pretty-print f out) (newline out)]))
     (read-file-forms "src/core.ss"))
 
-  (banner out "program entry: exercise the whole pipeline (the program's value)")
-  (fprintf out ";; A complete program must end in an expression; this one runs the\n")
-  (fprintf out ";; full forms->IR pipeline over a tiny source so every definition is\n")
-  (fprintf out ";; reachable and the pipeline is exercised end-to-end.\n")
-  (pretty-print '(compile-source-string "(+ 1 2)") out)
+  (if filter-main?
+      (begin
+        (banner out "program entry: the standalone `schemec` stdin->stdout filter")
+        (fprintf out ";; A complete program must end in an expression.  This is the\n")
+        (fprintf out ";; self-hosted `schemec`: read all source text from stdin, compile it\n")
+        (fprintf out ";; to IR, and write the IR to stdout (no header/toolchain -- those stay\n")
+        (fprintf out ";; the driver's job).  Built with the runtime's RT_FILTER_MAIN so the\n")
+        (fprintf out ";; entry's value is not printed after the IR.\n")
+        (pretty-print '(display (compile-source-string (read-all-stdin))) out))
+      (begin
+        (banner out "program entry: exercise the whole pipeline (the program's value)")
+        (fprintf out ";; A complete program must end in an expression; this one runs the\n")
+        (fprintf out ";; full forms->IR pipeline over a tiny source so every definition is\n")
+        (fprintf out ";; reachable and the pipeline is exercised end-to-end.\n")
+        (pretty-print '(compile-source-string "(+ 1 2)") out)))
 
   (close-port out)
   (fprintf (current-error-port) "wrote ~a\n" out-path))

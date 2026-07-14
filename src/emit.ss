@@ -3,7 +3,13 @@
 ;;; Value = i64 tagged word (matches src/runtime/runtime.c).  Every Scheme
 ;;; function shares ONE prototype so musttail is legal (LLVM requires matching
 ;;; caller/callee prototypes):
-;;;   tailcc i64 (i64 self, i64 argc, i64 a0 ... i64 a{K-1}, ptr overflow)
+;;;   fastcc i64 (i64 self, i64 argc, i64 a0 ... i64 a{K-1}, ptr overflow)
+;;; The CC is `fastcc`, not `tailcc` (change: fix-high-arity-call-convention):
+;;; a non-tail `call tailcc` with a stack-passed argument (which happens once
+;;; K+3 > 8 args, i.e. K >= 6, exceed the arm64 argument registers) fails to
+;;; preserve the caller's live arguments; `fastcc` preserves them.  Every tail
+;;; call here is `musttail` (see finish-call), which `fastcc` still guarantees,
+;;; so bounded-stack tail loops are unaffected.
 ;;; K = max fixed arity in the program.  self is the called closure (arg0), from
 ;;; which free variables are loaded.  argc is the actual argument count; the
 ;;; first K args ride in the positional slots (padded with 0 when fewer) and any
@@ -315,11 +321,11 @@
   (let ([r (fresh-temp)])
     (if tail?
         (begin
-          (emit! (string-append r " = " (if tc? "musttail " "") "call tailcc i64 " fp "(" callargs ")"))
+          (emit! (string-append r " = " (if tc? "musttail " "") "call fastcc i64 " fp "(" callargs ")"))
           (emit! (string-append "ret i64 " r))
           #f)
         (begin
-          (emit! (string-append r " = call tailcc i64 " fp "(" callargs ")"))
+          (emit! (string-append r " = call fastcc i64" fp "(" callargs ")"))
           r))))
 
 ;; spill i64 operands into a fresh GC-allocated array; returns a ptr operand.
@@ -488,7 +494,7 @@
                       (cons (cons rest (emit-build-rest f k)) env0)  ; hot path: fixed only
                       env0)])
          (et body env "%self" #t))
-       (string-append "define tailcc i64 @" label "(" argdecls ") {\n"
+       (string-append "define fastcc i64 @" label "(" argdecls ") {\n"
                       (lines->string (reverse emit-lines)) "}\n\n"))]))
 
 (define (emit-entry entry)

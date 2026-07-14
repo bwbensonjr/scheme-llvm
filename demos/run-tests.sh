@@ -100,6 +100,7 @@ check qqunq   demos/qq-unquote.scm '(a 2 b)'    # `,x unquote splices a value
 check qqspl   demos/qq-splice.scm  '(0 1 2 3)'  # `,@ys unquote-splicing -> append
 check qqplain demos/qq-plain.scm   '(a b c)'    # quasiquote, no unquotes -> constant
 check qqnest  demos/qq-nested.scm  a            # nested quasiquote left intact
+check hiarity demos/high-arity-nontail.scm 130  # K>=6: caller args survive non-tail calls (fastcc)
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
