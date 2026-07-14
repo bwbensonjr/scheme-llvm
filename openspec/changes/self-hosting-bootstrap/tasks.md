@@ -21,12 +21,19 @@ checks scheme-llvm's *output* for small programs, never scheme-llvm compiling *i
    `map`/`for-each`/`append` were fixed-arity, but the core uses multi-list `map`/`for-each` and
    3-arg `append` (Chez's are variadic). Fixed by making them variadic. `schemec` now compiles
    closure/`let`/`letrec`/recursion programs (with `(...)` parens).
-3. **Bracket-reader gap — OPEN ([[fix-bracket-reader]], next).** The prelude reader's `rd-datum`
-   has no case for `[` (char 91), so `[...]` bracket syntax mis-reads and `schemec` segfaults.
-   The assembled core (Chez `pretty-print`) uses ~529 brackets, so this blocks the stage-1 build
-   and triple test. (Found while closing (2); `demos/fact.scm`'s segfault was this, not closures.)
+3. **Bracket-reader gap — FIXED ([[fix-bracket-reader]], landed).** The prelude reader's
+   `rd-datum` had no case for `[` (char 91), so `[...]` syntax mis-read and `schemec` segfaulted
+   on the ~529-bracket core. Fixed by accepting `[`/`]` as list syntax. `schemec` now compiles
+   bracket programs (incl. `demos/fact.scm`) to correct, runnable IR (fact → 120).
+4. **Evaluation-order divergence — OPEN ([[fix-emit-eval-order]], next).** `schemec`'s IR is
+   correct but **not byte-identical** to the Chez-hosted compiler's: temps come out in a
+   different order because `(emit-app (ev f …) (map … args) …)` and similar rely on host
+   argument-evaluation order (Chez right-to-left vs scheme-llvm left-to-right). This breaks the
+   byte-identical fixed point (task 3), so it must close before the triple test — it is the
+   long-standing open question "does any pass rely on Chez evaluation order?" made concrete.
 
-Resume 2.1 once (3) lands. Prelude, toggle, and REPL-scope decisions are D4/D5 in design.md.
+Resume 2.1 (full build) once (4) lands; the driver wiring (2.2) already works on non-brackets.
+Prelude, toggle, and REPL-scope decisions are D4/D5 in design.md.
 
 - [~] 2.1 Build the core AOT to a native `schemec` using the Chez-hosted compiler: assemble the
       core with `tools/assemble-core.ss`, append the `(display (compile-source-string

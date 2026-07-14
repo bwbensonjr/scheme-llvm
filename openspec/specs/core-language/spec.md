@@ -457,11 +457,12 @@ faithful; the single-list/two-argument forms remain the common fast path.
 
 The compiler SHALL provide `read-from-string`, which parses a source string and returns the
 first datum it contains. The reader SHALL recognize integers (optionally signed), symbols,
-the empty list, proper lists `( … )` and dotted/improper lists `( … . x)`, booleans
-`#t`/`#f`, characters `#\x` (single codepoint) and named characters, strings `" … "` with
-escape sequences, `#(...)` vectors, and `'`-quote sugar (`'x` reads as `(quote x)`), skipping
-interleaved whitespace and `;` line comments. Symbols SHALL be interned (a read symbol is
-`eq?` to the same-named literal).
+the empty list, proper lists `( … )`, bracketed lists `[ … ]` (accepted interchangeably with
+parentheses), and dotted/improper lists `( … . x)`, booleans `#t`/`#f`, characters `#\x`
+(single codepoint) and named characters, strings `" … "` with escape sequences, `#(...)`
+vectors, and `'`-quote sugar (`'x` reads as `(quote x)`), skipping interleaved whitespace and
+`;` line comments. Symbols SHALL be interned (a read symbol is `eq?` to the same-named
+literal).
 
 String literals SHALL support the escape sequences `\n` (newline), `\t` (tab), `\r` (return),
 `\\` (backslash), `\"` (double quote), and `\xHH…;` (a hexadecimal Unicode codepoint
@@ -475,6 +476,11 @@ List syntax SHALL support dotted pairs: a standalone `.` before the final elemen
 parentheses SHALL produce an improper list whose tail is the datum following the `.`, so
 `(a . b)` reads as the pair of `a` and `b`.
 
+Bracketed list syntax `[ … ]` SHALL be accepted as equivalent to `( … )`: a `[` opens a list
+and a `]` closes one, and brackets and parentheses are interchangeable (a list opened with `[`
+may be closed with `)` and vice-versa). This mirrors the source the compiler consumes (Chez
+`pretty-print` emits `[...]` for binding forms). Strict bracket/paren matching is not required.
+
 Malformed input for these extensions (an unrecognized escape, an unknown character name, or a
 misplaced `.`) is undefined for this subset.
 
@@ -483,6 +489,12 @@ misplaced `.`) is undefined for this subset.
 - **WHEN** a program evaluates `(read-from-string "(a (b c) 42)")`
 - **THEN** the result is the list `(a (b c) 42)` — the symbol `a`, the list `(b c)`, and the
   fixnum `42`
+
+#### Scenario: Read a bracketed list
+
+- **WHEN** a program evaluates `(read-from-string "(let ([x 5]) x)")`
+- **THEN** the result is the list `(let ((x 5)) x)` — the `[x 5]` binding reads as the list
+  `(x 5)`, identical to the parenthesized form
 
 #### Scenario: Read atoms of each type
 

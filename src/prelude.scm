@@ -285,9 +285,11 @@
     (or (= k 32) (or (= k 9) (or (= k 10) (= k 13))))))
 (define (rd-digit? c)
   (let ([k (char->integer c)]) (and (< 47 k) (< k 58))))   ; '0'..'9'
-(define (rd-delim? c)                    ; ends a token: ws or ( ) " ;
+(define (rd-delim? c)                    ; ends a token: ws or ( ) [ ] " ;
   (let ([k (char->integer c)])
-    (or (rd-ws? c) (or (= k 40) (or (= k 41) (or (= k 34) (= k 59)))))))
+    (or (rd-ws? c)
+        (or (= k 40) (or (= k 41) (or (= k 91) (or (= k 93)
+        (or (= k 34) (= k 59)))))))))
 
 (define (rd-skip-line s n i)             ; index just past the next newline (or n)
   (if (< i n)
@@ -427,7 +429,8 @@
   (let ([j (rd-skip-ws s n i)])
     (if (< j n)
         (cond
-          [(= (char->integer (string-ref s j)) 41) (cons (reverse acc) (+ j 1))]   ; )
+          [(let ([c (char->integer (string-ref s j))]) (or (= c 41) (= c 93)))
+           (cons (reverse acc) (+ j 1))]                                           ; ) or ]
           [(rd-dot? s n j)                                                          ; . tail
            (let* ([r (rd-datum s n (rd-skip-ws s n (+ j 1)))]
                   [j2 (rd-skip-ws s n (cdr r))])
@@ -440,6 +443,7 @@
   (let ([k (char->integer (string-ref s i))])
     (cond
       [(= k 40) (rd-list s n (+ i 1) (quote ()))]          ; (
+      [(= k 91) (rd-list s n (+ i 1) (quote ()))]          ; [ (brackets = parens)
       [(= k 39) (rd-quote s n (+ i 1))]                    ; '
       [(= k 96) (rd-quasi s n (+ i 1))]                    ; `
       [(= k 44) (rd-unquote s n (+ i 1))]                  ; ,
