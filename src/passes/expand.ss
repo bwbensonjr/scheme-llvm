@@ -259,6 +259,7 @@
                  `(let ,(map bind-exp (cadr e)) ,@(map exp1 (cddr e))))]
             [(eq? h 'letrec) `(letrec ,(map bind-exp (cadr e)) ,@(map exp1 (cddr e)))]
             [(memq h '(+ - *)) (expand-arith exp1 h (cdr e))]
+            [(eq? h 'string-append) (expand-string-append exp1 (cdr e))]
             [(memq h '(= < > <= >= eq? eqv?)) (expand-compare exp1 h (cdr e))]
             [else (map exp1 e)]))))               ; if/begin/set!/apply/primcall/application
 
@@ -321,6 +322,17 @@
 (define (fold-arith op xs)
   (let loop ([acc (list op (car xs) (cadr xs))] [rest (cddr xs)])
     (if (null? rest) acc (loop (list op acc (car rest)) (cdr rest)))))
+
+;; N-ary `string-append` -> left-folded binary primcalls (the runtime op is
+;; binary), mirroring the arithmetic fold.  Identities: () -> "", one arg -> that
+;; arg.  A bare `string-append` in value position is handled separately by the
+;; parser (eta-expansion over the prelude `%str-concat`); this only rewrites the
+;; direct-call form the core uses pervasively in `emit.ss`.
+(define (expand-string-append exp1 args)
+  (let ([xs (map exp1 args)])
+    (cond [(null? xs) ""]
+          [(null? (cdr xs)) (car xs)]
+          [else (fold-arith 'string-append xs)])))
 
 ;; N-ary comparisons -> single-evaluation chained pairwise comparisons.  Each
 ;; operand is bound to a fresh temp (so <=/>= may reference it twice), then the

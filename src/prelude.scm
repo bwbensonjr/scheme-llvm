@@ -173,6 +173,15 @@
 ;; construct a string from character arguments (via the list->string primitive).
 (define (string . cs) (list->string cs))
 
+;;; --- string-append over a list (self-host-gap-sweep G8) --------------------
+;;; Compiler support for `string-append` in value position: the parser eta-expands
+;;; a bare `string-append` to `(lambda gs (%str-concat gs))`, so `(apply
+;;; string-append xs)` works for any arity.  Written in the common subset -- each
+;;; `(string-append a b)` here is 2-arg, i.e. native under Chez and the binary
+;;; primcall under scheme-llvm -- so the prelude still loads and runs under Chez.
+(define (%str-concat xs)
+  (if (null? xs) "" (string-append (car xs) (%str-concat (cdr xs)))))
+
 ;;; --- character / string library (string-char-library) ---------------------
 ;;; char comparisons are n-ary and chained, reducing through char->integer and
 ;;; the numeric comparisons.  `op` is a lambda wrapper (primitives are not

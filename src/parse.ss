@@ -18,6 +18,34 @@
                   %error-abort))
 (define (prim? op) (and (memq op *prims*) #t))
 
+;; ---- primitives as first-class values (self-host-gap-sweep G8) ----
+;; Primitives are reserved keywords, so a bare reference in value position (e.g.
+;; `(map car xs)`, `(apply string-append xs)`) is not a variable and would be
+;; unbound.  When one appears as a value, eta-expand it into a lambda so it becomes
+;; a genuine procedure; a call in operator position is still recognized as a
+;; primcall (the prim check is head-only), so direct calls are unaffected.  The
+;; fix lives here, not in the prelude: a prelude `(define (car x) (car x))` would
+;; be a primcall under scheme-llvm but infinite self-recursion under the bootstrap
+;; host, which loads the prelude directly.
+(define *prim-eta-arity* '((car . 1) (cdr . 1) (cons . 2)))
+
+(define (nsyms n)   ; (p1 ... pn), fresh-looking params for an eta lambda
+  (let loop ([i 1] [acc '()])
+    (if (> i n)
+        (reverse acc)
+        (loop (+ i 1)
+              (cons (string->symbol (string-append "p" (number->string i))) acc)))))
+
+;; source lambda that behaves as the primitive OP used as a value.  `string-append`
+;; is variadic (folds over its args via the prelude helper `%str-concat`); the
+;; fixed-arity prims eta-expand to `(lambda (p ...) (op p ...))`.
+(define (prim-as-value op)
+  (cond
+    [(eq? op 'string-append) '(lambda gs (%str-concat gs))]
+    [(assq op *prim-eta-arity*)
+     => (lambda (p) (let ([ps (nsyms (cdr p))]) `(lambda ,ps (,op ,@ps))))]
+    [else (error 'parse "primitive not available as a first-class value" op)]))
+
 ;; ---- variadic parameter lists ----
 ;; A lambda's param field may be a proper list (fixed arity), an improper list
 ;; (dotted rest `(a b . r)`), or a bare symbol (all-args rest).  These helpers
@@ -49,7 +77,7 @@
     [(string? e) `(const ,e)]              ; string literals are self-evaluating
     [(char? e) `(const ,e)]                ; char literals are self-evaluating
     [(null? e) `(const ())]
-    [(symbol? e) e]
+    [(symbol? e) (if (prim? e) (parse-expr (prim-as-value e)) e)]  ; prim value -> eta
     [(pair? e)
      (match e
        [(quote ,d) `(const ,d)]
