@@ -15,12 +15,18 @@ checks scheme-llvm's *output* for small programs, never scheme-llvm compiling *i
    exceeds arm64's 8 argument registers and `tailcc` non-tail calls corrupted the caller's
    live args. Fixed by emitting `fastcc`. After this, `schemec` builds and compiles
    closure-free programs byte-identically.
-2. **Closure miscompilation — OPEN ([[fix-closure-self-compilation]]).** `schemec` fails on any
-   program that produces a closure (`lambda`/`let`/`letrec`/define-of-procedure) with
-   `arity error: expected 2, got 3` raised in its own execution, and segfaults on recursive
-   `letrec`. A distinct self-application bug in the compiler's closure path; blocks 2.1.
+2. **Closure-arity gap — FIXED ([[fix-closure-self-compilation]], landed).** `schemec` failed
+   on any closure-producing program (`lambda`/`let`/`letrec`/define-of-procedure) with
+   `arity error: expected 2, got 3`. Root cause was **not** codegen: the prelude
+   `map`/`for-each`/`append` were fixed-arity, but the core uses multi-list `map`/`for-each` and
+   3-arg `append` (Chez's are variadic). Fixed by making them variadic. `schemec` now compiles
+   closure/`let`/`letrec`/recursion programs (with `(...)` parens).
+3. **Bracket-reader gap — OPEN ([[fix-bracket-reader]], next).** The prelude reader's `rd-datum`
+   has no case for `[` (char 91), so `[...]` bracket syntax mis-reads and `schemec` segfaults.
+   The assembled core (Chez `pretty-print`) uses ~529 brackets, so this blocks the stage-1 build
+   and triple test. (Found while closing (2); `demos/fact.scm`'s segfault was this, not closures.)
 
-Resume 2.1 once (2) lands. Prelude, toggle, and REPL-scope decisions are D4/D5 in design.md.
+Resume 2.1 once (3) lands. Prelude, toggle, and REPL-scope decisions are D4/D5 in design.md.
 
 - [~] 2.1 Build the core AOT to a native `schemec` using the Chez-hosted compiler: assemble the
       core with `tools/assemble-core.ss`, append the `(display (compile-source-string

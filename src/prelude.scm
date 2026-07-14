@@ -86,11 +86,34 @@
   (let loop ([xs xs] [acc (quote ())])
     (if (null? xs) acc (loop (cdr xs) (cons (car xs) acc)))))
 
-(define (append a b)
-  (if (null? a) b (cons (car a) (append (cdr a) b))))
+;; append is variadic (R7RS): zero or more lists.  The compiler core uses 3-arg
+;; append (e.g. emit-code-def's argdecls), and Chez's append is variadic, so
+;; this must be too for the core to self-compile (fix-closure-self-compilation).
+(define (%append2 a b)
+  (if (null? a) b (cons (car a) (%append2 (cdr a) b))))
+(define (append . lists)
+  (if (null? lists)
+      (quote ())
+      (if (null? (cdr lists))
+          (car lists)
+          (%append2 (car lists) (apply append (cdr lists))))))
 
-(define (map f xs)
-  (if (null? xs) (quote ()) (cons (f (car xs)) (map f (cdr xs)))))
+;; map/for-each are variadic (R7RS): one or more lists, walked in lockstep,
+;; stopping at the shortest.  The single-list case is the fast path; the
+;; multi-list case (used pervasively by the compiler core -- e.g. rename's
+;; (map cons names new) and emit's (for-each ... slots (iota k))) applies f to
+;; the i-th element of every list.  Chez's map/for-each are variadic, so these
+;; match and the core self-compiles (fix-closure-self-compilation).
+(define (%map1 f xs)
+  (if (null? xs) (quote ()) (cons (f (car xs)) (%map1 f (cdr xs)))))
+(define (%any-null? ls)
+  (if (null? ls) #f (if (null? (car ls)) #t (%any-null? (cdr ls)))))
+(define (%mapn f ls)
+  (if (%any-null? ls)
+      (quote ())
+      (cons (apply f (%map1 car ls)) (%mapn f (%map1 cdr ls)))))
+(define (map f xs . more)
+  (if (null? more) (%map1 f xs) (%mapn f (cons xs more))))
 
 (define (memq x xs)
   (if (null? xs) #f (if (eq? x (car xs)) xs (memq x (cdr xs)))))
@@ -130,8 +153,14 @@
 ;;; (predicate-taking procs take the predicate first, per R6RS.)
 
 ;; apply a procedure to each element for effect; returns the unspecified value.
-(define (for-each f xs)
-  (if (null? xs) (if #f #f) (begin (f (car xs)) (for-each f (cdr xs)))))
+(define (%for-each1 f xs)
+  (if (null? xs) (if #f #f) (begin (f (car xs)) (%for-each1 f (cdr xs)))))
+(define (%for-eachn f ls)
+  (if (%any-null? ls)
+      (if #f #f)
+      (begin (apply f (%map1 car ls)) (%for-eachn f (%map1 cdr ls)))))
+(define (for-each f xs . more)
+  (if (null? more) (%for-each1 f xs) (%for-eachn f (cons xs more))))
 
 ;; #t iff the predicate holds for every element (short-circuits on #f).
 (define (andmap p xs)

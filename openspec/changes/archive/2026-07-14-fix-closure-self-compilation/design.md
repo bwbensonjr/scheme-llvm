@@ -27,10 +27,39 @@ compiles all of these correctly, and scheme-llvm's demo suite (which includes cl
 `let`, named-`let` loops, multi-define programs) passes on all three backends — so the defect
 is specific to scheme-llvm compiling **the compiler's own closure-handling code**.
 
+## Root cause (found 2026-07-14 — task 1 complete)
+
+**It is not a codegen miscompilation. It is a missing prelude capability.** The prelude's `map`
+and `for-each` are **single-list only**:
+
+```scheme
+(define (map f xs)      (if (null? xs) '() (cons (f (car xs)) (map f (cdr xs)))))
+(define (for-each f xs) (if (null? xs) (if #f #f) (begin (f (car xs)) (for-each f (cdr xs)))))
+```
+
+But the compiler core uses the **multi-list** (R7RS-variadic) forms pervasively — `parse.ss`'s
+`rename` has `(map cons names new)`, `(map cons xs new)`, `(map list new es)`; `emit.ss` has
+`(map (lambda (b op) …) binds ops)`, `(map … slots (iota k))`, `(map … fixed (iota f))`,
+`(for-each (lambda (s i) …) slots (iota k))`; etc. Chez's built-in `map`/`for-each` are
+variadic, so the source runs fine Chez-hosted; under self-compilation `map`/`for-each` resolve
+to the 2-arg prelude versions, and a 2-list call `(map cons names new)` enters a 2-parameter
+function with 3 arguments → `arity error: expected 2, got 3`.
+
+Bisection: `read` ✓ → `collect-define-syntax` ✓ → `compute-known` ✓ → `collect-toplevel` ✓ →
+`expand` ✓ → `parse-program` ✓ → **`rename-program` ✗** (its `(lambda …)` case is the first
+multi-list `map` the pipeline reaches). Minimal mechanism confirmed:
+`(map cons (quote (1 2)) (quote (3 4)))` compiled by scheme-llvm errors `expected 2, got 3`.
+
+**Fix: make the prelude `map` and `for-each` variadic (accept ≥ 1 lists).** Expressible in the
+subset (rest args + `apply` + a single-list helper), like the G8/G10 prelude work. This is why
+closure-free programs worked (they reach no multi-list `map`) while any `lambda`/`let`/`letrec`/
+`define`-of-procedure program hit `rename`'s multi-list `map` immediately.
+
 ## Goals / Non-Goals
 
-**Goals:** find the exact miscompiled construct/pass; fix it at the root; keep all currently
-passing programs correct; add a regression test that exercises the self-compiled closure path.
+**Goals:** make the prelude `map`/`for-each` variadic so the self-compiled compiler runs its own
+closure path; keep all currently passing programs correct; add a regression test that exercises
+a multi-list `map` compiled by scheme-llvm.
 
 **Non-Goals:** the full stage-1 build / triple test (that resumes in
 [[self-hosting-bootstrap]]); performance; the `tailcc→fastcc` work (done). The recursive

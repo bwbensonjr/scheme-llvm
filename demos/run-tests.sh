@@ -101,6 +101,7 @@ check qqspl   demos/qq-splice.scm  '(0 1 2 3)'  # `,@ys unquote-splicing -> appe
 check qqplain demos/qq-plain.scm   '(a b c)'    # quasiquote, no unquotes -> constant
 check qqnest  demos/qq-nested.scm  a            # nested quasiquote left intact
 check hiarity demos/high-arity-nontail.scm 130  # K>=6: caller args survive non-tail calls (fastcc)
+check mapmulti demos/map-multi-list.scm '(11 22 33)'  # variadic multi-list map (self-host closure path)
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"
