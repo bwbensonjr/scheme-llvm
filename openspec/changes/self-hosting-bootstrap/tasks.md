@@ -16,9 +16,18 @@ trips this pervasively; all demos are `K ≤ 5`, which is why the suite never ca
 independent of `-O0`/`-O2`). Fix tracked in [[fix-high-arity-call-convention]]; resume 2.1 once
 it lands. Prelude, toggle, and REPL-scope decisions are D4/D5 in design.md.
 
-- [ ] 2.1 Build the core AOT to a native `schemec` using the Chez-hosted compiler: assemble the
+- [~] 2.1 Build the core AOT to a native `schemec` using the Chez-hosted compiler: assemble the
       core with `tools/assemble-core.ss`, append the `(display (compile-source-string
       (read-all-stdin)))` main, AOT-compile with `compile.ss`, and add a `make build/schemec` rule.
+      — **Build machinery done** (`make build/schemec`: assemble `--filter-main` → `--emit-ir` →
+      link `-DRT_FILTER_MAIN`, all `fastcc`), and `schemec` compiles closure-free programs
+      byte-identically (`(+ 1 2)`, `42`, `(if …)`, `(quote …)`). **But NOT functionally complete:**
+      `schemec` fails on any program that produces a closure — `arity error: expected 2, got 3`
+      for `lambda`/`let`/`letrec`/`define`-of-procedure — and segfaults on recursive `letrec`.
+      These are **further self-application miscompilations** (distinct from the fixed `tailcc`
+      bug) in `schemec`'s own closure path; scheme-llvm compiles closure programs correctly when
+      Chez-hosted (demo `toplevel` etc.), so they surface only under self-compilation. **BLOCKED**
+      pending dedicated fixes (see §2 header) — likely a short series, one change each.
       **NB (from [[self-host-io-strategy]] 3.3):** the standard standalone `main` prints the
       program's final value (`rt_write` + newline), which would append `()\n` after the IR. Use a
       **filter-style main that suppresses the final-value print** (or have the driver strip a
@@ -27,10 +36,16 @@ it lands. Prelude, toggle, and REPL-scope decisions are D4/D5 in design.md.
       **Scaffolding done (2026-07-14):** runtime `RT_FILTER_MAIN` (suppresses the value print) and
       `tools/assemble-core.ss --filter-main` (emits `build/schemec.scm` with the filter entry) are
       in place; the build itself is BLOCKED on [[fix-high-arity-call-convention]] (see §2 header).
-- [ ] 2.2 Wire the **batch** driver to invoke `schemec` (text→IR) instead of the in-process core
+- [~] 2.2 Wire the **batch** driver to invoke `schemec` (text→IR) instead of the in-process core
       (D4): toggleable `SCHEMEC`/`--via-schemec` path in `compile-file`; driver merges the prelude
       (`with-prelude`) and pipes merged text to `schemec`; `host-target-header` + toolchain
       unchanged; in-process path retained for bootstrapping and fallback.
+      — **Wiring code implemented** (`compile.ss`: `--via-schemec`/env `SCHEMEC`,
+      `forms->ir-via-schemec` writes merged forms to the `schemec` co-process and reads IR back).
+      Cannot be end-to-end verified against real demos until 2.1's closure miscompilations are
+      fixed (every demo has closures). NB: chez `process` merges the child's stderr into the
+      captured stdout — separate stderr before trusting captured IR (a `2>` redirect, as
+      `run-repl` does).
   - [ ] 2.2a (REPL) Do **not** wire the REPL to `schemec` (D5). Record that the REPL stays on the
         Chez front-end through path C and moves off Chez via path A (task 4.2), noting the
         entry points path A must drive (`repl-lcode` / `emit-repl-module` / `emit-repl-batch`).

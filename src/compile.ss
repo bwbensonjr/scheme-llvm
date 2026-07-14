@@ -63,12 +63,41 @@
         (with-prelude (read-program prelude-path) user-forms)
         user-forms)))
 
-;; Driver: assemble forms, run the pure core, prepend the host target header,
-;; and write the .ll.  The header (a clang subprocess) is an effect and stays
-;; here so the core stays pure and host-agnostic.
-(define (compile-file src ll dump? prelude?)
+;; --- optional self-hosted forms->IR via a compiled `schemec` (path C, D4) --
+;; When enabled (env SCHEMEC=<path> or --via-schemec), the forms->IR step shells
+;; out to the compiled `schemec` (a text->IR filter) instead of running the core
+;; in-process.  The driver still owns everything else: it merges the prelude
+;; (with-prelude), then serializes the already-merged forms to text on schemec's
+;; stdin and reads the emitted core IR from its stdout.  `schemec` prepends no
+;; prelude and no target header -- those stay the driver's job.  The in-process
+;; path is retained (it builds schemec, and is the default/fallback).
+(define default-schemec "build/schemec")
+(define (schemec-binary) (or (getenv "SCHEMEC") default-schemec))
+
+;; forms (already prelude-merged) -> IR text, via the schemec co-process.  Write
+;; every form then close stdin; schemec reads to EOF, compiles, writes IR to
+;; stdout.  It reads all input before emitting, so write-then-read cannot
+;; deadlock on the pipe.
+(define (forms->ir-via-schemec forms)
+  ;; Chez `process` merges the child's stderr into the stdout pipe, which would
+  ;; corrupt the captured IR; send schemec's stderr to /dev/null (a compile error
+  ;; there surfaces as empty IR and a downstream clang failure).
+  (let* ([pipes (process (string-append (schemec-binary) " 2>/dev/null"))]
+         [from (car pipes)] [to (cadr pipes)])
+    (for-each (lambda (f) (write f to) (newline to)) forms)
+    (close-port to)
+    (let ([ir (get-string-all from)])
+      (close-port from)
+      ir)))
+
+;; Driver: assemble forms, run forms->IR (in-process core, or schemec when
+;; via?), prepend the host target header, and write the .ll.  The header (a
+;; clang subprocess) is an effect and stays here so the core stays host-agnostic.
+(define (compile-file src ll dump? prelude? via?)
   (let* ([forms (program-forms src prelude?)]
-         [ir    (compile-forms forms (if dump? dump no-dump))]
+         [ir    (if via?
+                    (forms->ir-via-schemec forms)
+                    (compile-forms forms (if dump? dump no-dump)))]
          [text  (string-append (host-target-header) ir)])
     (let ([out (open-output-file ll 'replace)]) (display text out) (close-port out))))
 
@@ -251,22 +280,24 @@
     (flush-output-port (current-output-port))))
 
 ;; --- argument handling ---
+;; `via?` (env SCHEMEC=<path> or --via-schemec) routes the batch forms->IR step
+;; through the compiled `schemec` (path C, D4) instead of the in-process core.
 (define (main args)
   (let loop ([args args] [src #f] [out #f] [dump? #f] [backend "aot"] [prelude? #t]
-             [repl? #f] [emit-ir? #f])
+             [repl? #f] [emit-ir? #f] [via? (and (getenv "SCHEMEC") #t)])
     (cond
       [(null? args)
        (cond
          [repl? (run-repl prelude?)]
          [emit-ir? (emit-ir-filter prelude?)]
          [else
-          (unless src (error 'compile "usage: compile.ss SRC.scm [-o OUT] [--dump] [--backend aot|jit|bitcode] [--no-prelude]\n   or: compile.ss --repl [--no-prelude]\n   or: compile.ss --emit-ir [--no-prelude] < SRC.scm  (IR text on stdout)"))
+          (unless src (error 'compile "usage: compile.ss SRC.scm [-o OUT] [--dump] [--backend aot|jit|bitcode] [--no-prelude] [--via-schemec]\n   or: compile.ss --repl [--no-prelude]\n   or: compile.ss --emit-ir [--no-prelude] < SRC.scm  (IR text on stdout)\n   (--via-schemec / env SCHEMEC=<path>: run forms->IR through the compiled schemec)"))
           (let* ([out (or out (strip-ext src))] [ll (string-append out ".ll")])
-            (compile-file src ll dump? prelude?)
+            (compile-file src ll dump? prelude? via?)
             (case (string->symbol backend)
               [(aot)
                (link ll out)
-               (fprintf (current-error-port) "wrote ~a and ~a\n" ll out)]
+               (fprintf (current-error-port) "wrote ~a and ~a~a\n" ll out (if via? " (via schemec)" ""))]
               [(bitcode)
                (require-llvm-tools)
                (let ([bc (string-append out ".bc")])
@@ -277,12 +308,13 @@
                (require-llvm-tools)
                (run-jit ll out)]
               [else (error 'compile "unknown backend (want aot|jit|bitcode)" backend)]))])]
-      [(string=? (car args) "-o") (loop (cddr args) src (cadr args) dump? backend prelude? repl? emit-ir?)]
-      [(string=? (car args) "--dump") (loop (cdr args) src out #t backend prelude? repl? emit-ir?)]
-      [(string=? (car args) "--backend") (loop (cddr args) src out dump? (cadr args) prelude? repl? emit-ir?)]
-      [(string=? (car args) "--no-prelude") (loop (cdr args) src out dump? backend #f repl? emit-ir?)]
-      [(string=? (car args) "--repl") (loop (cdr args) src out dump? backend prelude? #t emit-ir?)]
-      [(string=? (car args) "--emit-ir") (loop (cdr args) src out dump? backend prelude? repl? #t)]
-      [else (loop (cdr args) (car args) out dump? backend prelude? repl? emit-ir?)])))
+      [(string=? (car args) "-o") (loop (cddr args) src (cadr args) dump? backend prelude? repl? emit-ir? via?)]
+      [(string=? (car args) "--dump") (loop (cdr args) src out #t backend prelude? repl? emit-ir? via?)]
+      [(string=? (car args) "--backend") (loop (cddr args) src out dump? (cadr args) prelude? repl? emit-ir? via?)]
+      [(string=? (car args) "--no-prelude") (loop (cdr args) src out dump? backend #f repl? emit-ir? via?)]
+      [(string=? (car args) "--repl") (loop (cdr args) src out dump? backend prelude? #t emit-ir? via?)]
+      [(string=? (car args) "--emit-ir") (loop (cdr args) src out dump? backend prelude? repl? #t via?)]
+      [(string=? (car args) "--via-schemec") (loop (cdr args) src out dump? backend prelude? repl? emit-ir? #t)]
+      [else (loop (cdr args) (car args) out dump? backend prelude? repl? emit-ir? via?)])))
 
 (main (command-line-arguments))
