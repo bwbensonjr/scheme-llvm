@@ -42,6 +42,7 @@ check counter   demos/counter.scm   3
 check countdown demos/countdown.scm 999   # 10M tail iterations in bounded stack
 check toplevel  demos/toplevel.scm  102   # multi-define program (letrec desugar)
 check derived   demos/derived.scm   180   # cond/and/or/when/unless/let*/named-let
+check casecxr   demos/case-cxr.scm  1511  # case derived form + cxr combinators (caar..cadar)
 check namedloop demos/named-let-loop.scm 42  # named-let tail loop, bounded stack
 check naryarith demos/nary-arith.scm 43  # n-ary + - *, unary negation, identities
 check narycmp   demos/nary-compare.scm 11111101  # n-ary/chained < = > <= >=, single-eval

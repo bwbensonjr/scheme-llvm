@@ -47,7 +47,36 @@
     ((_ (test) rest ...) (let ((t test)) (if t t (cond rest ...))))
     ((_ (test e ...) rest ...) (if test (begin e ...) (cond rest ...)))))
 
+;; `case`: evaluate KEY once, then run the first clause whose datum list contains
+;; it (eqv?), else the `else` clause.  A parenthesized KEY is bound to a hygienic
+;; temp `k` first (so it is not re-evaluated per clause); the recursive calls pass
+;; the bound identifier, which no longer matches the compound-KEY rule.  Expands
+;; to `cond` over `(memv k '(d ...))`.
+(define-syntax case
+  (syntax-rules (else)
+    ((_ (key ...) clause ...) (let ((k (key ...))) (case k clause ...)))
+    ((_ k) (if #f #f))
+    ((_ k (else e ...)) (begin e ...))
+    ((_ k ((d ...) e ...) clause ...)
+     (if (memv k (quote (d ...))) (begin e ...) (case k clause ...)))))
+
 (define (list . xs) xs)
+
+;;; --- compositional car/cdr accessors (cxr combinators) --------------------
+;;; caar..cddr and the depth-3 forms caaar..cdddr, each the named composition of
+;;; the primitive car/cdr (letters read right-to-left = innermost-first).
+(define (caar x) (car (car x)))
+(define (cadr x) (car (cdr x)))
+(define (cdar x) (cdr (car x)))
+(define (cddr x) (cdr (cdr x)))
+(define (caaar x) (car (caar x)))
+(define (caadr x) (car (cadr x)))
+(define (cadar x) (car (cdar x)))
+(define (caddr x) (car (cddr x)))
+(define (cdaar x) (cdr (caar x)))
+(define (cdadr x) (cdr (cadr x)))
+(define (cddar x) (cdr (cdar x)))
+(define (cdddr x) (cdr (cddr x)))
 
 (define (length xs)
   (let loop ([xs xs] [n 0])
@@ -65,6 +94,10 @@
 
 (define (memq x xs)
   (if (null? xs) #f (if (eq? x (car xs)) xs (memq x (cdr xs)))))
+
+;; memv: like memq but compares with eqv? (used by the `case` macro).
+(define (memv x xs)
+  (if (null? xs) #f (if (eqv? x (car xs)) xs (memv x (cdr xs)))))
 
 (define (assq k xs)
   (if (null? xs) #f (if (eq? k (car (car xs))) (car xs) (assq k (cdr xs)))))
