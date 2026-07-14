@@ -15,7 +15,10 @@ beyond what the compiler uses.
 
 ## Decisions
 
-### D1: Choose avoid vs grow (decision pending; recommendation: AVOID)
+### D1: Choose avoid vs grow (DECIDED: AVOID, 2026-07-13)
+
+**Decision: AVOID.** Refactor the ~21 sites to return pairs/lists and destructure them; add
+no language/runtime surface. This keeps the self-hosting gap flat, as recommended below.
 
 **Recommendation: avoid.** Refactor the ~21 sites to return a pair/list and destructure it
 (`(let ([r (f …)]) (let ([a (car r)] [b (cadr r)]) …))`, or a small `match`). Rationale:
@@ -46,5 +49,5 @@ Resolve D1 before implementing; the tasks below branch on it.
 
 ## Open Questions
 
-- Final call on D1. Do we want multiple values as a *language* feature (grow) or only to
-  unblock self-hosting (avoid)?
+- ~~Final call on D1.~~ Resolved 2026-07-13: AVOID. Multiple values are pursued only to
+  unblock self-hosting, not as a standalone language feature.

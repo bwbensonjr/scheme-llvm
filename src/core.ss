@@ -63,7 +63,8 @@
 
 (define (compile-forms forms dump)
   (reset-counter!)
-  (let-values ([(macro-env runtime-forms) (collect-define-syntax forms)])
+  (let* ([me+rf (collect-define-syntax forms)]
+         [macro-env (car me+rf)] [runtime-forms (cadr me+rf)])
     (let* ([known (compute-known macro-env runtime-forms)]
            [top   (collect-toplevel runtime-forms)]
            [expd  (expand top macro-env known)]

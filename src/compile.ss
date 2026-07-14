@@ -193,7 +193,8 @@
                (let ([dn (define-name form)])
                  (when dn (set! known (cons dn known)))
                  (let ([lc (repl-lcode (repl-lower-form env (expand-form form)))])
-                   (let-values ([(text name defd) (emit-repl-module lc (+ n 1))])
+                   (let* ([m (emit-repl-module lc (+ n 1))]
+                          [text (car m)] [name (cadr m)] [defd (caddr m)])
                      (set! n (+ n 1))
                      (let ([result (send-frame! text name)])
                        (when (eof-object? result)

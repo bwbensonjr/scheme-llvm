@@ -42,12 +42,12 @@
                      (map (lambda (r) (cons (car r) (cadr r))) (cddr sr))))))
 
 ;; Scan the (prelude-first) top-level forms: lift define-syntax into a macro
-;; environment, return the remaining runtime forms.  define-syntax is only
-;; recognized at the literal top level (compile-time only; none survive).
+;; environment, return (list macro-env remaining-runtime-forms).  define-syntax
+;; is only recognized at the literal top level (compile-time only; none survive).
 (define (collect-define-syntax forms)
   (let loop ([fs forms] [env '()] [runtime '()])
     (cond
-      [(null? fs) (values (reverse env) (reverse runtime))]
+      [(null? fs) (list (reverse env) (reverse runtime))]
       [(define-syntax-form? (car fs))
        (loop (cdr fs) (cons (parse-define-syntax (car fs)) env) runtime)]
       [else (loop (cdr fs) env (cons (car fs) runtime))])))
@@ -142,7 +142,7 @@
          (if (eq? (car t) 'quote)
              (for-each (lambda (x) (walk x #t)) (cdr t))
              (begin (walk (car t) quoted?) (walk (cdr t) quoted?)))]
-        [else (values)]))
+        [else (if #f #f)]))
     seen))
 
 (define (instantiate tmpl binds pvars renames quoted?)

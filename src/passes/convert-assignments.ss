@@ -28,14 +28,15 @@
 (define (convert-assignments prog)
   (define assigned (find-assigned prog))
   (define (asgd? x) (mem? x assigned))
-  ;; rename assigned binders to temps, box them at the top of the (converted) body
+  ;; rename assigned binders to temps, box them at the top of the (converted)
+  ;; body; return (list new-binders new-body)
   (define (rebind xs body)
     (let loop ([xs xs] [nx '()] [as '()] [ts '()])
       (if (null? xs)
           (let ([nx (reverse nx)] [as (reverse as)] [ts (reverse ts)])
             (if (null? as)
-                (values nx body)
-                (values nx
+                (list nx body)
+                (list nx
                   `(let ,(map (lambda (a t) (list a `(primcall box ,t))) as ts) ,body))))
           (let ([x (car xs)])
             (if (asgd? x)
@@ -53,7 +54,8 @@
       [(primcall ,op . ,args) `(primcall ,op ,@(map cvt args))]
       [(lambda ,params ,body)                    ; params may be variadic
        (let ([rest (param-rest params)])
-         (let-values ([(nx body^) (rebind (param-names params) (cvt body))])
+         (let* ([nx+body (rebind (param-names params) (cvt body))]
+                [nx (car nx+body)] [body^ (cadr nx+body)])
            (if rest
                (let ([nrest  (list-ref nx (- (length nx) 1))]
                      [nfixed (list-head nx (- (length nx) 1))])
@@ -61,7 +63,8 @@
                `(lambda ,nx ,body^))))]
       [(let ,binds ,body)
        (let ([xs (map car binds)] [es (map (lambda (b) (cvt (cadr b))) binds)])
-         (let-values ([(nx body^) (rebind xs (cvt body))])
+         (let* ([nx+body (rebind xs (cvt body))]
+                [nx (car nx+body)] [body^ (cadr nx+body)])
            `(let ,(map list nx es) ,body^)))]
       [(letrec ,binds ,body)
        `(letrec ,(map (lambda (b) (list (car b) (cvt (cadr b)))) binds) ,(cvt body))]

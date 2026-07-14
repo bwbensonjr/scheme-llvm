@@ -38,14 +38,14 @@
   (let ([s (number->string b 16)])
     (string-upcase (if (= (string-length s) 1) (string-append "0" s) s))))
 
-;; escape a name for an LLVM c"..." literal; return (values escaped byte-count),
+;; escape a name for an LLVM c"..." literal; return (list escaped byte-count),
 ;; the count including the trailing NUL.  Printable ASCII except " and \ go
 ;; through verbatim; everything else (incl. UTF-8 bytes) as \XX.
 (define (llvm-cstring name)
   (let* ([bv (string->utf8 name)] [n (bytevector-length bv)])
     (let loop ([i 0] [acc '()])
       (if (= i n)
-          (values (apply string-append (reverse acc)) (+ n 1))
+          (list (apply string-append (reverse acc)) (+ n 1))
           (let ([b (bytevector-u8-ref bv i)])
             (loop (+ i 1)
                   (cons (if (and (>= b #x20) (<= b #x7e) (not (= b #x22)) (not (= b #x5c)))
@@ -54,21 +54,22 @@
                         acc)))))))
 
 ;; emit a private constant global (prefix + counter) holding s's UTF-8 bytes and
-;; a trailing NUL; return (values @global byte-length-without-NUL).
+;; a trailing NUL; return (list @global byte-length-without-NUL).
 (define (emit-cstring-global prefix s)
-  (let-values ([(esc len) (llvm-cstring s)])   ; len includes the trailing NUL
-    (let* ([g (string-append prefix (number->string sym-n))]
-           [def (string-append g " = private unnamed_addr constant ["
-                               (number->string len) " x i8] c\"" esc "\\00\"\n")])
-      (set! sym-n (+ sym-n 1))
-      (set! sym-globals (cons def sym-globals))
-      (values g (- len 1)))))
+  (let* ([esc+len (llvm-cstring s)]            ; len includes the trailing NUL
+         [esc (car esc+len)] [len (cadr esc+len)]
+         [g (string-append prefix (number->string sym-n))]
+         [def (string-append g " = private unnamed_addr constant ["
+                             (number->string len) " x i8] c\"" esc "\\00\"\n")])
+    (set! sym-n (+ sym-n 1))
+    (set! sym-globals (cons def sym-globals))
+    (list g (- len 1))))
 
 (define (symbol-global name)      ; dedup the name's global, return its @operand
   (cond
     [(assoc name sym-table) => cdr]
     [else
-     (let-values ([(g len) (emit-cstring-global "@.str.sym." name)])
+     (let* ([g+len (emit-cstring-global "@.str.sym." name)] [g (car g+len)])
        (set! sym-table (cons (cons name g) sym-table))
        g)]))
 
@@ -87,7 +88,8 @@
        (emit! (string-append t " = call i64 @rt_intern(ptr " g ")"))
        t)]
     [(string? d)                                              ; UTF-8 bytes + rt_make_string
-     (let-values ([(g len) (emit-cstring-global "@.str.lit." d)])
+     (let* ([g+len (emit-cstring-global "@.str.lit." d)]
+            [g (car g+len)] [len (cadr g+len)])
        (let ([t (fresh-temp)])
          (emit! (string-append t " = call i64 @rt_make_string(ptr " g ", i64 "
                                (number->string len) ")"))
@@ -233,7 +235,7 @@
     (emit! (string-append raw " = call i64 @rt_alloc_words(i64 " (number->string (+ caps-count 1)) ")"))
     (emit! (string-append p " = inttoptr i64 " raw " to ptr"))
     (emit! (string-append "store i64 ptrtoint (ptr @" label " to i64), ptr " p))
-    (values raw p)))
+    (list raw p)))
 
 (define (store-cap p i op)
   (let ([g (fresh-temp)])
@@ -241,7 +243,8 @@
     (emit! (string-append "store i64 " op ", ptr " g))))
 
 (define (emit-make-closure label capops)
-  (let-values ([(raw p) (emit-alloc-closure label (length capops))])
+  (let* ([raw+p (emit-alloc-closure label (length capops))]
+         [raw (car raw+p)] [p (cadr raw+p)])
     (let loop ([i 1] [cs capops]) (unless (null? cs) (store-cap p i (car cs)) (loop (+ i 1) (cdr cs))))
     (let ([c (fresh-temp)]) (emit! (string-append c " = or i64 " raw ", 4")) c)))
 
@@ -249,7 +252,8 @@
 (define (emit-closure-block entries env cp tc?)
   (let* ([allocs
           (map (lambda (ent)
-                 (let-values ([(raw p) (emit-alloc-closure (cadr ent) (length (caddr ent)))])
+                 (let* ([raw+p (emit-alloc-closure (cadr ent) (length (caddr ent)))]
+                        [raw (car raw+p)] [p (cadr raw+p)])
                    (let ([c (fresh-temp)])
                      (emit! (string-append c " = or i64 " raw ", 4"))
                      (list (car ent) p (caddr ent) c))))   ; name, base-ptr, caps, tagged
@@ -502,7 +506,7 @@
       [(program ,cdefs ,entry)
        (for-each (lambda (d) (match d [(code ,l ,self ,fixed ,rest ,body) (S body)])) cdefs)
        (S entry)])
-    (values defd refd)))
+    (list defd refd)))
 
 (define (repl-check-arity prog)   ; enforce the pinned K (design D6)
   (match prog
@@ -548,8 +552,9 @@
                          (apply string-append (reverse bodies))
                          (apply string-append (reverse thunks))
                          entry))
-        (let*-values ([(prog) (car ps)]
-                      [(fd rd) (repl-scan-globals prog)])
+        (let* ([prog (car ps)]
+               [fd+rd (repl-scan-globals prog)]
+               [fd (car fd+rd)] [rd (cadr fd+rd)])
           (match prog
             [(program ,cdefs ,e)
              (let* ([body (apply string-append
@@ -566,12 +571,13 @@
 ;; defines get a slot definition, globals it only references (defined by earlier
 ;; forms) are declared `external` and resolve in the JIT to the module that
 ;; defined them.  The single entry thunk @__repl_N returns the form's value.
-;; Returns (values module-text entry-name defined-globals).
+;; Returns (list module-text entry-name defined-globals).
 (define (emit-repl-module prog n)
   (reset-emit!) (reset-symbols!)
   (set! *arity* repl-arity)
   (repl-check-arity prog)
-  (let-values ([(defd refd) (repl-scan-globals prog)])
+  (let* ([defd+refd (repl-scan-globals prog)]
+         [defd (car defd+refd)] [refd (cadr defd+refd)])
     (let ([external (diff refd defd)]
           [name (string-append "__repl_" (number->string n))])
       (match prog
@@ -588,6 +594,6 @@
                          (map (lambda (s) (string-append (global-operand s)
                                             " = global i64 0\n"))
                               defd))])
-           (values (string-append (rt-declarations) exts slots (symbol-globals)
-                                  body thunk)
-                   name defd))]))))
+           (list (string-append (rt-declarations) exts slots (symbol-globals)
+                                body thunk)
+                 name defd))]))))

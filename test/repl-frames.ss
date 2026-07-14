@@ -39,8 +39,8 @@
         [bout (standard-output-port)])            ; binary: exact byte framing
     (let loop ([forms (read-forms (car args))] [n 1])
       (unless (null? forms)
-        (let-values ([(text name defd)
-                      (emit-repl-module (form->lcode env (car forms)) n)])
+        (let* ([m (emit-repl-module (form->lcode env (car forms)) n)]
+               [text (car m)] [name (cadr m)] [defd (caddr m)])
           (let ([bv (string->utf8 text)])
             (put-bytevector bout (string->utf8
                                    (string-append name " "
