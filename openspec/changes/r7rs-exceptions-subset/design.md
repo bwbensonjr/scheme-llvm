@@ -66,17 +66,43 @@ independent effort. The escape stack delivers `guard` now and is forward-compati
           %v)))
 ```
 
-`%guard-enter`/`%guard-raised?`/`%guard-object`/`%guard-leave` are runtime primitives over
-the frame stack (D1). Whether `guard` ships as a `syntax-rules` macro in the prelude or a
-built-in expander form is an apply-time call; the prelude is preferred (it keeps the special
-forms small), provided the macro can bind the fresh `%f`/`%v`/`e` hygienically — which the
-current expander already does for macro-introduced identifiers.
+**Spike outcome (task 2.1), which refines this:** a C runtime function cannot call the
+guarded thunk directly — the thunk is `fastcc` with the K-padded uniform prototype
+(`self, argc, a0…a{K-1}, overflow`, `emit.ss:6`) and only the emitter knows K. But the ccc→
+fastcc call is exactly what `@scheme_entry` emits, and `longjmp` across JIT'd fastcc frames
+back to a C `setjmp` is exactly what `rt_trap`/`rt_error` already do. So the working shaping
+is:
 
-*Note on `setjmp` + returned handle*: `%guard-enter` cannot itself both `setjmp` and return
-a Scheme value across the convention safely; the practical shaping is a single runtime
-primitive `%call-guarded(thunk)` that `setjmp`s internally and returns a tagged
-`(ok . value)` / `(raised . object)` pair, with the macro destructuring that. D2's exact
-primitive boundary is settled by a small spike (Risks).
+```
+;; C runtime (owns setjmp + the frame stack); ccc_fnptr is a ccc function pointer
+rt_run_guarded(ccc_fnptr, thunk):
+  push frame
+  if setjmp(frame.env) == 0:  v = ccc_fnptr(thunk); pop; return (ok    . v)
+  else:                       o = frame.raised;     pop; return (raised . o)
+
+;; emitter-synthesized, PRIVATE, ccc, knows K: does the fastcc 0-arg call
+@__apply0(clos) = call fastcc (clos, 0, undef×K, null)
+```
+
+`guard` lowers to `(rt-run-guarded <addr of @__apply0> (lambda () body …))` then a `cond`
+over the tagged pair. Passing the trampoline **by pointer** (a runtime address, not a
+symbol) is what makes it work under the per-form-module JIT without symbol collisions —
+mirroring how the host already calls `scheme_entry` via a looked-up address.
+
+**Validated** by `spike/guard/` (a standalone native binary composing a C setjmp-frame
+stack + `@__apply0` ccc trampoline + `rt_raise` longjmp): normal return, single catch, and
+nested frames with nearest-frame delivery all pass at `-O2`. The JIT case adds only
+interactions already proven in this repo (`rt_trap` longjmps across JIT'd `fastcc` frames to
+a live C frame; process↔JIT calls both directions; JIT pointer calls), so the composition
+holds there too.
+
+### D2a: `guard` is an emitter-recognized special form (revises the D2 lean)
+
+Because the lowering must (a) synthesize the private ccc trampoline `@__apply0` that knows
+the module's K and (b) take its address, `guard` is recognized by the frontend/emitter (as
+`apply` already is), not implemented as a pure prelude `syntax-rules` macro. `raise`, `error`,
+and the error-object accessors remain ordinary procedures (prelude + runtime); only `guard`
+needs emitter support. This resolves the "guard home" open question.
 
 ### D3: R7RS `error` signature + error-objects
 
@@ -134,9 +160,10 @@ stack, this falls out for free — no host change beyond initializing the stack 
 
 ## Open Questions
 
-- **Exact escape-primitive boundary** (D2): one `%call-guarded(thunk)` returning a tagged
-  pair, vs. an enter/setjmp/leave set — settle by spike.
-- **`guard` home**: prelude `syntax-rules` macro vs. built-in expander form.
+- ~~**Exact escape-primitive boundary**~~ **Resolved (spike, D2):** C `rt_run_guarded(ccc_fnptr,
+  thunk)` owns the `setjmp`/frame stack; the emitter synthesizes the private ccc trampoline
+  `@__apply0` and passes its address.
+- ~~**`guard` home**~~ **Resolved (D2a):** emitter-recognized special form (like `apply`).
 - **error-object printing**: how `rt_write` renders an error-object if a program prints one
   (vs. only rendering it on abort).
 - **Depth bound** on the frame stack (fixed array vs. growable), and its interaction with the

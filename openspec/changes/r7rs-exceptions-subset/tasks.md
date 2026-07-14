@@ -10,9 +10,11 @@
 
 ## 2. Runtime: one-shot escape stack
 
-- [ ] 2.1 Spike the escape-primitive boundary (design D2): confirm a C runtime function can
-  `setjmp`, call a Scheme thunk closure, and return a tagged `(ok . v)` / `(raised . obj)`
-  pair across the tailcc convention.
+- [x] 2.1 Spike the escape-primitive boundary (design D2): confirm a C runtime function can
+  `setjmp`, call a Scheme thunk closure (via an emitter-synthesized ccc trampoline passed by
+  pointer), and return a tagged `(ok . v)` / `(raised . obj)` pair. **Done** —
+  `spike/guard/` passes (normal / catch / nested) at `-O2`; `guard` must be an
+  emitter special form (D2a).
 - [ ] 2.2 Generalize `rt_trap` (single `jmp_buf*`) into a stack of escape frames
   `{ jmp_buf; val raised; }`, with push/pop and "raise into the top frame, else fall back to
   the outermost trap" semantics.
