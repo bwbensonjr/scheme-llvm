@@ -149,121 +149,33 @@
              (cond [(< i 0) #f] [(char=? (string-ref s i) #\.) i] [else (loop (- i 1))]))])
     (if i (substring s 0 i) s)))
 
-;; --- interactive REPL over the persistent ORC/LLJIT host ----------------
-;; Drives build/repl-host as a co-process: read a form, run it through the same
-;; expander/lowering/emit as batch (but one form at a time, against a persistent
-;; REPL env + growing macro env), frame the module, send it, and print the value
-;; the host returns.  A form that fails to compile is reported and dropped, with
-;; all session state rolled back so the next form is unaffected.
+;; --- interactive REPL: launch the embedded-compiler host ----------------
+;; The REPL is now Chez-free (change: repl-embedded-incremental): the whole
+;; incremental loop -- read a complete form, compile it against the persistent
+;; session state, JIT and run it, print the value -- lives in build/repl-host,
+;; which A-links the EMBEDDED compiler and does its own compilation in-process.
+;; This driver only ensures the host is up to date and then hands the terminal
+;; over to it (the host inherits this process's stdin/stdout/stderr, so prompts,
+;; values, and diagnostics flow straight through).  There is no Chez per-form
+;; compilation, no frame protocol, and no persistent Chez state any more.
 (define repl-host-path "build/repl-host")
 
-;; Rebuild the host whenever the runtime/host sources or the recipe changed, not
-;; merely when the binary is missing: the host links a runtime snapshot and the
-;; JIT resolves rt_* from the host process, so a stale binary silently lacks any
-;; rt_* added since it was built (change: fix-stale-repl-host-rebuild).  `make`
-;; no-ops when the host is already up to date.
+;; Rebuild the host whenever the runtime/host sources, the embedded compiler (and
+;; the core sources behind it), or the recipe changed -- not merely when the
+;; binary is missing: the host links a runtime + compiler snapshot and the JIT
+;; resolves rt_* / prelude globals from the host process, so a stale binary
+;; silently lacks anything added since it was built (changes:
+;; fix-stale-repl-host-rebuild, repl-embedded-incremental).  `make` no-ops when
+;; the host is already up to date.
 (define (ensure-host)
   (unless (zero? (system "make build/repl-host 1>&2"))
     (error 'repl "failed to build the REPL host")))
 
-(define (repl-frame text name)          ; host wire frame: "<name> <bytes>\n<ir>"
-  (string-append name " "
-                 (number->string (bytevector-length (string->utf8 text))) "\n"
-                 text))
-
-(define (condition->string e)
-  (with-output-to-string (lambda () (display-condition e))))
-
-;; `repl-lcode` (the shared back half of the pipeline for one core-IL
-;; expression) lives in core.ss -- it is the entry point the REPL overlaps with.
+;; Launch the host, inheriting our stdio, and exit with its status.  --no-prelude
+;; is passed through so the host seeds the session without the standard library.
 (define (run-repl prelude?)
   (ensure-host)
-  (reset-counter!)
-  ;; Chez `process` merges the child's stderr into the stdout pipe, which would
-  ;; desync our line-per-result framing; send the host's stderr to /dev/null (it
-  ;; reports trap detail on stdout via rt_trap_msg instead).
-  (let* ([pipes (process (string-append repl-host-path " 2>/dev/null"))]
-         [from  (car pipes)]
-         [to    (cadr pipes)]
-         [err   (current-error-port)]
-         [env   (make-repl-env)])
-    (let ([macro-env '()]
-          [known (union* (list *core-keywords* *prims* *extra-op-keywords*))]
-          [n 0])
-      (define (send-frame! text name)   ; -> the host's one-line result
-        (put-string to (repl-frame text name))
-        (flush-output-port to)
-        (get-line from))
-      (define (note-syntax! form)       ; register a define-syntax in the session
-        (set! macro-env (cons (parse-define-syntax form) macro-env))
-        (set! known (cons (cadr form) known)))
-      ;; expand a define's INIT (not its raw signature -- expanding the raw form
-      ;; would treat a dotted param list like `(f . xs)` as an application), then
-      ;; rebuild a simple `(define name expanded-init)`; expand any other form
-      ;; whole.
-      (define (expand-form form)
-        (if (define-form? form)
-            (let ([nd (normalize-define form)])
-              `(define ,(car nd) ,(expand (cadr nd) macro-env known)))
-            (expand form macro-env known)))
-      ;; process one interactive form; snapshot + roll back all session state on
-      ;; a compile error so a bad form never corrupts the session.
-      (define (feed form)
-        (let ([s0 (vector-ref env 0)] [s1 (vector-ref env 1)]
-              [sme macro-env] [sk known] [sn n])
-          (guard (e (#t (vector-set! env 0 s0) (vector-set! env 1 s1)
-                        (set! macro-env sme) (set! known sk) (set! n sn)
-                        (fprintf err "error: ~a\n" (condition->string e))))
-            (cond
-              [(define-syntax-form? form)
-               (note-syntax! form)
-               (fprintf err ";; syntax ~a\n" (cadr form))]
-              [else
-               (let ([dn (define-name form)])
-                 (when dn (set! known (cons dn known)))
-                 (let ([lc (repl-lcode (repl-lower-form env (expand-form form)))])
-                   (let* ([m (emit-repl-module lc (+ n 1))]
-                          [text (car m)] [name (cadr m)] [defd (caddr m)])
-                     (set! n (+ n 1))
-                     (let ([result (send-frame! text name)])
-                       (when (eof-object? result)
-                         (fprintf err "host terminated unexpectedly\n") (exit 1))
-                       (display result) (newline)
-                       (flush-output-port (current-output-port))))))]))))
-      ;; Load the standard library as ONE mutually-recursive group: collect its
-      ;; macros, pre-register every define name (so forward/mutual references
-      ;; resolve), lower each body reusing those symbols, and emit a single
-      ;; combined module (emit-repl-batch) whose globals later forms resolve
-      ;; against.  A single module is required: splitting a recursive group into
-      ;; per-form modules would reference a slot before its defining module was
-      ;; added to the JIT.
-      (define (load-prelude!)
-        (let ([forms (read-program prelude-path)])
-          (for-each
-            (lambda (f)
-              (cond [(define-syntax-form? f) (note-syntax! f)]
-                    [(define-form? f)
-                     (set! known (cons (define-name f) known))
-                     (repl-register-define! env f)]))
-            forms)
-          (let ([progs (fold-left
-                         (lambda (acc f)
-                           (if (define-form? f)
-                               (cons (repl-lcode (repl-lower-form* env (expand-form f) #f)) acc)
-                               acc))
-                         '() forms)])
-            (send-frame! (emit-repl-batch (reverse progs)) "scheme_entry")
-            ;; the combined module used @__repl_1..N internally; start interactive
-            ;; thunks above that range so their names don't collide in the JIT.
-            (set! n (length progs)))))
-      (when prelude? (load-prelude!))
-      (fprintf err "scheme-llvm REPL (persistent ORC/LLJIT host).  ^D to exit.\n")
-      (let loop ()
-        (fprintf err "scheme> ") (flush-output-port err)
-        (let ([form (read)])
-          (if (eof-object? form)
-              (begin (fprintf err "\n") (close-port to) (exit 0))
-              (begin (feed form) (loop))))))))
+  (exit (system (string-append repl-host-path (if prelude? "" " --no-prelude")))))
 
 ;; --- core filter mode: stdin source text -> stdout IR text ---------------
 ;; The self-hosting-facing shape of the core (design D2): read all of stdin as

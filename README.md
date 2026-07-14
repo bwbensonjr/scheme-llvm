@@ -6,7 +6,8 @@ A **Chez-hosted Scheme→LLVM compiler**: a hand-rolled frontend pipeline that e
 LLVM IR, a small C runtime under Boehm GC, and **three backends** (AOT, JIT, bitcode) that
 are checked to agree byte-for-byte. **34 demos pass, all three backends in agreement.**
 There is also an **interactive REPL** on a persistent LLVM ORC/LLJIT host (`--repl`), where
-each form is JIT-compiled into a long-lived session. The compiler is written in Scheme
+each form is compiled by the **embedded compiler in-process** (no Chez, no subprocess) and
+JIT-compiled into a long-lived session. The compiler is written in Scheme
 (bootstrapped with Chez), with an eventual self-hosting goal, and prioritizes simple,
 transparent stages (see `CLAUDE.md`). Development is OpenSpec-driven, tracked under
 `openspec/`.
@@ -56,24 +57,32 @@ test/repl-batch-tests.sh        # persistent globals via batch build (redefiniti
 
 `--repl` runs a read-eval-print loop backed by a **persistent LLVM ORC/LLJIT host**
 (`src/repl/host.cpp`, built via `make build/repl-host` — automatically, and rebuilt whenever
-the runtime or host sources change). Each
-entered form is compiled to its own module and added to a long-lived JIT in which the GC
-heap, symbol table, and runtime stay alive, so definitions, closures, and heap values
-persist across forms and top-level names can be redefined. Runtime traps (e.g. arity errors)
-are isolated, so a bad form is reported and the session continues; `^D` (end of input) exits.
-It needs the LLVM 22 development install (headers + `llvm-config`, from the same `llvm@22`
-keg). References resolve to earlier forms only — mutual top-level recursion (which the
-whole-program batch letrec supports) is not available interactively.
+the runtime, host, or embedded-compiler sources change). The host **A-links the embedded
+compiler** (`bootstrap/embed-repl.ll`) and compiles each entered form **in-process — no Chez
+and no per-form subprocess** (`--repl` is fully Chez-free); the driver merely launches the
+host and hands over the terminal. Each form is compiled to its own module and added to a
+long-lived JIT in which the GC heap, symbol table, and runtime stay alive, so definitions,
+closures, and heap values persist across forms and top-level names can be redefined. A bad
+form's compile error is reported and the session state rolled back (via in-language `guard`),
+and runtime traps (e.g. arity errors) are isolated, so the session continues; `^D` (end of
+input) exits. It needs the LLVM 22 development install (headers + `llvm-config`, from the
+same `llvm@22` keg). References resolve to earlier forms only — mutual top-level recursion
+(which the whole-program batch letrec supports) is not available interactively.
 
 ## Layout
 
-- `src/` — the compiler: `compile.ss` (driver + `--repl`), `parse.ss`, `passes/`, `emit.ss`,
-  `runtime/runtime.c`, and `prelude.scm` (standard library, prepended to every program).
-- `src/repl/` — the persistent REPL host: `host.cpp` (LLVM ORC/LLJIT); built by the
+- `src/` — the compiler: `compile.ss` (driver + `--repl` launcher), `parse.ss`, `passes/`,
+  `emit.ss`, `runtime/runtime.c`, `prelude.scm` (standard library, prepended to every
+  program), and `repl-core.ss` (the interactive orchestration — persistent session state,
+  per-form compile with `guard` rollback, prelude-as-batch — assembled into the REPL host).
+- `src/repl/` — the persistent REPL host: `host.cpp` (LLVM ORC/LLJIT), which A-links the
+  embedded compiler (`bootstrap/embed-repl.ll`) and drives it in-process; built by the
   top-level `Makefile` (`build-host.sh` is a thin wrapper over `make build/repl-host`).
 - `src/run.cpp` — the in-process runner (`build/scheme-run`): links the compiled compiler
   (`bootstrap/embed.ll`, a committed host-agnostic stage-0 artifact) and JITs its output,
   so a whole program is compiled *and* run in one process with no Chez/clang/lli.
+- `bootstrap/` — committed host-agnostic stage-0 IR: `embed.ll` (batch embedded compiler) and
+  `embed-repl.ll` (interactive embedded compiler); regenerated from source by the `Makefile`.
 - `demos/` — example programs and the `run-tests.sh` / `run-backends.sh` harnesses.
 - `test/` — REPL test harnesses and the front-end unit tests.
 - `run-all-tests.sh` — top-level runner that invokes every `demos/` and `test/`
@@ -147,11 +156,14 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   program compiled *and* run in one process with **no Chez, no clang/lli, no subprocess**.
   A parity harness checks the runner agrees with AOT on every demo (dev→ship fidelity). The
   compiler IR is a committed, host-agnostic stage-0 artifact (`bootstrap/embed.ll`).
-- **Interactive REPL** (`--repl`) on a persistent LLVM ORC/LLJIT host: per-form modules
-  added to a long-lived JIT with a shared GC heap / symbol table / runtime, so definitions,
-  closures, heap values, and redefinition persist across forms; runtime traps (arity errors)
-  are isolated so the session survives. A REPL-vs-batch equivalence harness checks the two
-  agree on final values.
+- **Interactive REPL** (`--repl`) on a persistent LLVM ORC/LLJIT host, driven by the
+  **embedded compiler in-process** (Path A for the REPL — **no Chez, no per-form
+  subprocess**; `bootstrap/embed-repl.ll` A-linked into the host): per-form modules added to
+  a long-lived JIT with a shared GC heap / symbol table / runtime, so definitions, closures,
+  heap values, and redefinition persist across forms; compile errors roll back (in-language
+  `guard`) and runtime traps (arity errors) are isolated so the session survives. A
+  REPL-vs-batch equivalence harness checks the two agree on final values — the same compiler
+  core drives both (dev→ship fidelity).
 - OpenSpec-driven changes; decisions (framework, calling convention) backed by spikes.
 
 ## Not yet done
@@ -173,14 +185,16 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   "it is an error" latitude); no general condition-type hierarchy.
 
 **Self-hosting (the north star)**
-- The compiler compiles itself to a byte-identical fixed point, and there are now two
-  Chez-free ways to *use* it: the batch `schemec` filter (Path C, subprocess) and the
-  in-process `build/scheme-run` (Path A — mechanism, whole program compiled and JIT-run in
-  one process). The **interactive `--repl` front end is still Chez**: its stateful,
-  incremental orchestration (persistent env, per-form modules, compile-error rollback) has
-  not yet been ported into the embedded compiler — that is the follow-on
-  `repl-embedded-incremental` change (gated on the `error`/`guard` downgrade). See
-  `openspec/explorations/modules-and-embedding.md` and `…/chez-free-repl.md` for the roadmap.
+- The compiler compiles itself to a byte-identical fixed point, and there are now three
+  Chez-free ways to *use* it: the batch `schemec` filter (Path C, subprocess), the in-process
+  `build/scheme-run` (Path A — mechanism, whole program compiled and JIT-run in one process),
+  and the **interactive `--repl`**, whose stateful, incremental orchestration (persistent env,
+  per-form modules, compile-error rollback via in-language `guard`) is now **ported into the
+  embedded compiler** (`src/repl-core.ss`, A-linked as `bootstrap/embed-repl.ll`) and runs
+  in-process — completing Path A for the REPL (change: `repl-embedded-incremental`). Chez
+  remains only as the **bootstrap** that regenerates the committed embedded IR from source.
+  See `openspec/explorations/modules-and-embedding.md` and `…/chez-free-repl.md` for the
+  roadmap.
 
 **Performance / cleanup (deferred by design)**
 - No dead-code elimination (the whole prelude is emitted into every program); O(n)

@@ -28,12 +28,19 @@ LDFLAGS    := $(shell $(LLVM_CONFIG) --ldflags --libs orcjit native --system-lib
 HOST       := build/repl-host
 CHEZ       := chez
 
+# The interactive REPL host A-links the EMBEDDED compiler (change:
+# repl-embedded-incremental): a compiler-source change must relink the host, so
+# bootstrap/embed-repl.ll is a prerequisite of $(HOST) and is itself rebuilt from
+# the core sources below (same staleness graph as scheme-run's embed.ll).
+EMBED_REPL_LL := bootstrap/embed-repl.ll
+
 .PHONY: repl-host schemec scheme-run clean
 repl-host: $(HOST)
 
-# Link; -rdynamic exports rt_* so JIT'd code resolves them from this process.
-$(HOST): build/host.o build/runtime-host.o Makefile
-	$(CXX) build/host.o build/runtime-host.o \
+# Link; -rdynamic exports rt_* AND the embedded compiler's scheme_entry so JIT'd
+# code resolves them from this process.  The embedded compiler IR is linked in.
+$(HOST): build/host.o build/runtime-host.o $(EMBED_REPL_LL) Makefile
+	$(CXX) build/host.o build/runtime-host.o $(EMBED_REPL_LL) \
 	  -rdynamic $(LDFLAGS) -L$(GC_LIB) -lgc -o $@
 	@echo "built $@"
 
@@ -97,6 +104,20 @@ build/embed.scm: tools/assemble-core.ss $(CORE_SS) src/prelude.scm | build
 $(EMBED_LL): build/embed.scm $(DRIVER_SS) | bootstrap
 	$(CHEZ) --libdirs src --script src/compile.ss --emit-ir < build/embed.scm > $@
 
+# --- interactive embedded compiler (change: repl-embedded-incremental) ------
+# bootstrap/embed-repl.ll is the assembled core PLUS src/repl-core.ss (the ported
+# run-repl orchestration), ending in the dispatched scheme_entry the REPL host
+# calls per operation.  Committed host-agnostic stage-0 artifact (no target
+# header), regenerated whenever the core, repl-core, assembly, or prelude change;
+# linked into build/repl-host above so a compiler-source change relinks the host.
+
+# assemble the core + repl-core into one program with the --repl-entry dispatcher
+build/embed-repl.scm: tools/assemble-core.ss $(CORE_SS) src/repl-core.ss src/prelude.scm | build
+	$(CHEZ) --script tools/assemble-core.ss --repl-entry
+
+$(EMBED_REPL_LL): build/embed-repl.scm $(DRIVER_SS) | bootstrap
+	$(CHEZ) --libdirs src --script src/compile.ss --emit-ir < build/embed-repl.scm > $@
+
 # run.cpp compiled as C++ against the LLVM headers.
 build/run.o: src/run.cpp Makefile | build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -116,5 +137,5 @@ bootstrap:
 clean:
 	rm -f $(HOST) build/host.o build/runtime-host.o \
 	      $(SCHEMEC) build/schemec.scm build/schemec.ll \
-	      $(RUN) build/run.o build/embed.scm
-	@echo "note: committed $(EMBED_LL) is left in place (regenerate with 'make $(EMBED_LL)')"
+	      $(RUN) build/run.o build/embed.scm build/embed-repl.scm
+	@echo "note: committed $(EMBED_LL) and $(EMBED_REPL_LL) are left in place (regenerate with 'make $(EMBED_LL) $(EMBED_REPL_LL)')"

@@ -16,6 +16,7 @@
                   make-vector vector-ref vector-set! vector-length vector?
                   symbol? string? char? boolean? integer? exact?
                   read-all-stdin display
+                  repl-mode repl-input repl-state-ref repl-state-set!
                   %error-abort %raise %run-guarded
                   %error-object? %error-object-message %error-object-irritants))
 (define (prim? op) (and (memq op *prims*) #t))

@@ -439,6 +439,74 @@ val rt_read_all_stdin(void) {
   return rt_make_string(buf, (intptr_t)len);
 }
 
+/* --- REPL request channel (change: repl-embedded-incremental) -------------
+ * The interactive host drives the embedded compiler by calling its single ccc
+ * `scheme_entry` repeatedly, one call per operation.  Because a ccc entry takes
+ * no scheme arguments, the host hands the operation selector and the per-form
+ * source text in through this C-side channel (mirroring how rt_read_all_stdin
+ * feeds the batch embed): the host calls rt_repl_set(mode, bytes, len) and then
+ * scheme_entry, whose dispatcher reads them back via the (repl-mode)/(repl-input)
+ * primitives.  Modes: 0 init-no-prelude, 1 init-with-prelude, 2 form-complete?,
+ * 3 compile-one-form.
+ *
+ * The embedded compiler's whole program is folded into one @scheme_entry, so its
+ * top-level bindings are LOCALS re-created on every call -- they cannot hold
+ * state across the host's per-form calls.  The dispatcher therefore keeps the
+ * session state (env/macro-env/known/n, bundled in a scheme vector) HERE, loading
+ * it into working globals at entry and saving it back before returning, via
+ * (repl-state-ref)/(repl-state-set!).
+ *
+ * Both the per-call input string and the cross-call state are held in single-slot
+ * GC_MALLOC_UNCOLLECTABLE cells so they are scanned roots: scheme_entry's prologue
+ * allocates (rt_box ...) before the dispatcher reads the input, and forms allocate
+ * freely between calls, so a plain static `val` could be collected (same reasoning
+ * as rt_intern's table).  #f (rt_repl_state_ref before any set) means "no state
+ * yet". */
+static intptr_t rt_repl_mode_v = 0;
+static val *rt_repl_input_cell = NULL;     /* [1]: current form/prelude source */
+static val *rt_repl_state_cell = NULL;     /* [1]: session-state vector, or FALSE_V */
+static val *rt_repl_cell(val **slot, val init) {
+  if (!*slot) { *slot = (val *)GC_MALLOC_UNCOLLECTABLE(sizeof(val)); (*slot)[0] = init; }
+  return *slot;
+}
+void rt_repl_set(intptr_t mode, const char *bytes, intptr_t len) {
+  rt_repl_mode_v = mode;
+  rt_repl_cell(&rt_repl_input_cell, NIL_V)[0] = rt_make_string(bytes, len);
+}
+val rt_repl_mode(void)  { return FIX(rt_repl_mode_v); }
+val rt_repl_input(void) { return rt_repl_cell(&rt_repl_input_cell, NIL_V)[0]; }
+/* decode a scheme fixnum to a C integer, so the host can read form-complete?'s
+ * consumed-count / incomplete(-1) / malformed(-2) result without knowing the tag. */
+intptr_t rt_fixnum_value(val v) { return UNFIX(v); }
+
+/* Persistent-global root set (change: repl-embedded-incremental).  In the REPL a
+ * top-level define stores its value into a JIT'd module's global slot, and those
+ * slots live in JIT-managed memory that libgc does NOT scan.  A value reachable
+ * only through a global slot would therefore be collected once the in-process
+ * embedded compiler's allocations trigger a GC (which they readily do -- the
+ * compiler shares this heap, unlike the old JIT-only host).  Every global-set!
+ * routes its value through rt_root, which keeps it in a scanned, uncollectable
+ * table so it survives.  Only the persistent-globals model emits global-set!;
+ * batch AOT uses letrec locals and never calls this.  Superseded values (a
+ * redefinition's old binding) stay rooted -- bounded by the number of top-level
+ * assignments in a session, which is negligible. */
+static val *root_table = NULL;
+static intptr_t root_count = 0, root_cap = 0;
+val rt_root(val v) {
+  if (root_count == root_cap) {
+    intptr_t ncap = root_cap ? root_cap * 2 : 256;
+    val *nt = (val *)GC_MALLOC_UNCOLLECTABLE((size_t)ncap * sizeof(val));
+    for (intptr_t i = 0; i < root_count; i++) nt[i] = root_table[i];
+    if (root_table) GC_free(root_table);
+    root_table = nt;
+    root_cap = ncap;
+  }
+  root_table[root_count++] = v;
+  return v;
+}
+val rt_repl_state_ref(void)  { return rt_repl_cell(&rt_repl_state_cell, FALSE_V)[0]; }
+val rt_repl_state_set(val v) { rt_repl_cell(&rt_repl_state_cell, FALSE_V)[0] = v; return NIL_V; }
+
 /* write a string's bytes to stdout verbatim -- no quotes, no trailing newline.
  * Returns an unspecified value (NIL) so it composes inside a `begin`. */
 val rt_display(val s) {

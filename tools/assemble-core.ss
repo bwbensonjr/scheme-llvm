@@ -39,8 +39,17 @@
 ;; prelude-correct (user-wins shadowing via with-prelude) with no file I/O.
 (define embed-entry? (and (member "--embed-entry" (command-line-arguments)) #t))
 
+;; With --repl-entry (change: repl-embedded-incremental), emit the interactive
+;; embedded compiler build/embed-repl.scm: the same assembled core, PLUS
+;; src/repl-core.ss (the ported run-repl orchestration), ending in the dispatched
+;; `scheme_entry` (repl-dispatch) the REPL host calls once per operation.  Like
+;; the batch embed it bakes the prelude in as a string constant so init-session
+;; can load it with no file I/O.
+(define repl-entry? (and (member "--repl-entry" (command-line-arguments)) #t))
+
 (define out-path
-  (cond [embed-entry?  "build/embed.scm"]
+  (cond [repl-entry?   "build/embed-repl.scm"]
+        [embed-entry?  "build/embed.scm"]
         [filter-main?  "build/schemec.scm"]
         [else          "build/core-self.scm"]))
 
@@ -145,6 +154,19 @@
     (read-file-forms "src/core.ss"))
 
   (cond
+    [repl-entry?
+     (banner out "src/repl-core.ss (verbatim): the interactive REPL orchestration")
+     (emit-verbatim out "src/repl-core.ss")
+     (banner out "program entry: the dispatched interactive embedded compiler")
+     (fprintf out ";; A complete program must end in an expression.  This is the interactive\n")
+     (fprintf out ";; embedded compiler (change: repl-embedded-incremental): the host sets\n")
+     (fprintf out ";; (repl-mode)/(repl-input) via rt_repl_set and calls this ccc `scheme_entry`\n")
+     (fprintf out ";; once per operation (init / form-complete? / compile-one-form), and reads\n")
+     (fprintf out ";; the returned scheme value back across the FFI.  *prelude-source* is the\n")
+     (fprintf out ";; standard prelude baked in as a string so init-session needs no file I/O.\n")
+     (write `(define *prelude-source* ,(file->string "src/prelude.scm")) out)
+     (newline out)
+     (pretty-print '(repl-dispatch) out)]
     [embed-entry?
      (banner out "program entry: the in-process embedded compiler")
      (fprintf out ";; A complete program must end in an expression.  This is the embedded\n")

@@ -163,6 +163,8 @@
     (symbol? "rt_symbol_p") (string? "rt_string_p") (char? "rt_char_p")
     (boolean? "rt_boolean_p") (integer? "rt_integer_p") (exact? "rt_exact_p")
     (read-all-stdin "rt_read_all_stdin") (display "rt_display")
+    (repl-mode "rt_repl_mode") (repl-input "rt_repl_input")
+    (repl-state-ref "rt_repl_state_ref") (repl-state-set! "rt_repl_state_set")
     (%error-abort "rt_error") (%raise "rt_raise")
     (%error-object? "rt_error_object_p")
     (%error-object-message "rt_error_object_message")
@@ -192,9 +194,13 @@
        (emit! (string-append t " = load i64, ptr " (global-operand s)))
        t)]
     [(global-set! ,s ,e)                     ; store into the slot; value = stored
-     (let ([op (ev e env cp tc?)])
-       (emit! (string-append "store i64 " op ", ptr " (global-operand s)))
-       op)]
+     ;; Route the value through rt_root so it survives GC: the JIT'd global slot
+     ;; lives in memory libgc does not scan, so a value reachable only through the
+     ;; slot would be collected (change: repl-embedded-incremental).
+     (let ([op (ev e env cp tc?)] [t (fresh-temp)])
+       (emit! (string-append t " = call i64 @rt_root(i64 " op ")"))
+       (emit! (string-append "store i64 " t ", ptr " (global-operand s)))
+       t)]
     [(if ,a ,b ,c) (ev-if a b c env cp tc?)]
     [(seq ,a ,b) (ev a env cp tc?) (ev b env cp tc?)]
     [(let ,binds ,body)
@@ -491,6 +497,11 @@
    "declare i64 @rt_integer_p(i64)\n"
    "declare i64 @rt_exact_p(i64)\n"
    "declare i64 @rt_read_all_stdin()\n"
+   "declare i64 @rt_repl_mode()\n"
+   "declare i64 @rt_repl_input()\n"
+   "declare i64 @rt_repl_state_ref()\n"
+   "declare i64 @rt_repl_state_set(i64)\n"
+   "declare i64 @rt_root(i64)\n"
    "declare i64 @rt_display(i64)\n"
    "declare i64 @rt_list_length(i64)\n"
    "declare i64 @rt_build_rest(i64, i64, i64, ptr, ptr)\n"
@@ -631,7 +642,14 @@
 ;; global slot, and a @scheme_entry that runs the thunks in order and returns
 ;; the last form's value.  This drives the batch-JIT validation of the
 ;; persistent-globals model (design D5 stage 1) with no separate-module linking.
-(define (emit-repl-batch progs)
+;; The batch entry is @scheme_entry by default (the AOT/batch-JIT validators link
+;; it against the runtime's main, which calls scheme_entry).  The interactive REPL
+;; host, however, ALSO links the embedded compiler's own ccc @scheme_entry, so its
+;; prelude batch needs a DISTINCT entry name or JIT->lookup would resolve to the
+;; linked compiler instead of this module (change: repl-embedded-incremental).
+;; emit-repl-batch-named takes that name; emit-repl-batch keeps the old default.
+(define (emit-repl-batch progs) (emit-repl-batch-named progs "scheme_entry"))
+(define (emit-repl-batch-named progs entry-name)
   (reset-emit!) (reset-symbols!)
   (set! *arity* repl-arity)
   (for-each repl-check-arity progs)
@@ -642,7 +660,7 @@
                                                         " = global i64 0\n"))
                              defd))]
                [entry (string-append
-                        "define i64 @scheme_entry() {\nentry:\n"
+                        "define i64 @" entry-name "() {\nentry:\n"
                         (apply string-append (reverse calls))
                         "  ret i64 " (or last "2") "\n}\n")])
           (string-append (rt-declarations) (symbol-globals) slots

@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# End-to-end tests for the persistent ORC/LLJIT REPL host (change:
-# interactive-repl, Group 4).  Each session's top-level forms are emitted as
-# separate per-form modules (test/repl-frames.ss) and streamed into the host;
-# we check the newline-separated values the host prints.  This exercises real
-# incremental persistence: cross-module global resolution, closures called
-# across modules, heap survival, and trap isolation.
+# End-to-end tests for the persistent ORC/LLJIT REPL host (changes:
+# interactive-repl Group 4, repl-embedded-incremental).  The host now A-links the
+# EMBEDDED compiler and compiles each entered form itself, so a session's raw
+# source text is fed straight to the host on stdin (no Chez, no frame protocol)
+# and we check the newline-separated values it prints.  This exercises real
+# incremental persistence: cross-form global resolution, closures called across
+# forms, heap survival, and trap isolation -- all Chez-free.  --no-prelude keeps
+# these core-model tests fast; they define everything they use (rest are prims).
 # Run from the repo root: test/repl-host-tests.sh
 set -u
 cd "$(dirname "$0")/.."
 
 HOST=build/repl-host
-# Rebuild the host if the runtime/host sources changed (not just if it is
-# missing): make no-ops when it is already up to date.
+# Rebuild the host if the runtime/host/embedded-compiler sources changed (not
+# just if it is missing): make no-ops when it is already up to date.
 make build/repl-host >/dev/null || { echo "host build failed"; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -21,8 +23,7 @@ check () {  # name  expected-newline-joined  <<forms
   local name="$1" want="$2"
   cat > "$TMP/$name.scm"
   local got
-  got="$(chez --libdirs src --script test/repl-frames.ss "$TMP/$name.scm" 2>"$TMP/$name.err" \
-           | "$HOST" 2>/dev/null)"
+  got="$("$HOST" --no-prelude < "$TMP/$name.scm" 2>/dev/null)"
   if [ "$got" = "$want" ]; then
     echo "  [OK  ] $name"; pass=$((pass+1))
   else
