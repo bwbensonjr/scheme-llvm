@@ -117,7 +117,11 @@ list, and with quasiquote nesting levels tracked so that only level-matching unq
 values. The rewrite SHALL run within the existing fixpoint expansion, so unquoted expressions
 are themselves fully expanded, and no `quasiquote`, `unquote`, or `unquote-splicing` form SHALL
 survive into the parsed core language. An `unquote` or `unquote-splicing` outside a
-`quasiquote` SHALL be reported as an error.
+`quasiquote` SHALL be reported as an error. The symbols `unquote`, `unquote-splicing`, and
+`quasiquote` MAY appear as ordinary list **data** inside a quasiquote (e.g. `` `(quote unquote) ``
+or `` `(a unquote b) ``); the rewrite SHALL reproduce them as literal structure rather than
+misparsing a datum whose head is one of those symbols but which is not a well-formed `(kw X)`
+form.
 
 #### Scenario: Quasiquote leaves no residual form after expansion
 
@@ -135,6 +139,13 @@ survive into the parsed core language. An `unquote` or `unquote-splicing` outsid
 
 - **WHEN** a program contains `(unquote x)` outside any `quasiquote`
 - **THEN** expansion reports an error
+
+#### Scenario: Literal unquote/quasiquote symbols survive as data
+
+- **WHEN** the expander rewrites `` `(list (quote unquote) ,(+ 1 2)) `` (the shape the
+  expander's own nested-quasiquote handling emits)
+- **THEN** expansion produces code that builds the list `(list unquote 3)` — the literal symbol
+  `unquote` is preserved as data — with no crash and no spurious unquote interpretation
 
 ### Requirement: syntax-rules can host a runtime pattern matcher
 

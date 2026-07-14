@@ -278,18 +278,23 @@
 ;; This is the standard R7RS quasiquote algorithm restricted to list structure.
 (define (qq d level)
   (cond
-    [(and (pair? d) (eq? (car d) 'unquote))               ; (unquote x)
+    ;; The `(pair? (cdr d))` / `(pair? (cdr (car d)))` guards ensure a datum is
+    ;; treated as (unquote/unquote-splicing/quasiquote X) only when it is a proper
+    ;; (kw . (X)) form.  A bare `(unquote)`/`(quasiquote)` symbol appearing as list
+    ;; *data* (e.g. `` `(quote unquote) ``) falls through to the general-pair arm
+    ;; and is reproduced structurally instead of crashing in `cadr` (gap G6).
+    [(and (pair? d) (eq? (car d) 'unquote) (pair? (cdr d)))  ; (unquote x)
      (if (= level 1)
          (cadr d)                                          ; level 1: splice the expression
          `(list (quote unquote) ,(qq (cadr d) (- level 1))))]  ; nested: keep structurally
-    [(and (pair? d) (eq? (car d) 'unquote-splicing))      ; bare (unquote-splicing x)
+    [(and (pair? d) (eq? (car d) 'unquote-splicing) (pair? (cdr d)))  ; bare (u-s x)
      (if (= level 1)
          (error 'expand "unquote-splicing not in list context" d)
          `(list (quote unquote-splicing) ,(qq (cadr d) (- level 1))))]
-    [(and (pair? d) (eq? (car d) 'quasiquote))            ; nested quasiquote: level+1
+    [(and (pair? d) (eq? (car d) 'quasiquote) (pair? (cdr d)))  ; nested qq: level+1
      `(list (quote quasiquote) ,(qq (cadr d) (+ level 1)))]
     [(and (pair? d) (pair? (car d))                       ; list with leading splice
-          (eq? (car (car d)) 'unquote-splicing) (= level 1))
+          (eq? (car (car d)) 'unquote-splicing) (pair? (cdr (car d))) (= level 1))
      `(append ,(cadr (car d)) ,(qq (cdr d) level))]
     [(pair? d)                                            ; general pair
      `(cons ,(qq (car d) level) ,(qq (cdr d) level))]
