@@ -32,9 +32,14 @@ chez --libdirs src --script src/compile.ss demos/fact.scm --no-prelude
 # program to IR in-process and JITs it via ORC/LLJIT.  (Needs LLVM 22.)
 build/scheme-run < demos/fact.scm                                         # => 120
 
-# interactive REPL (persistent ORC/LLJIT host; builds build/repl-host on first use)
-chez --libdirs src --script src/compile.ss --repl              # ^D to exit
-chez --libdirs src --script src/compile.ss --repl --no-prelude # faster start, no stdlib
+# interactive REPL -- compilation is Chez-free: the embedded compiler is linked
+# into build/repl-host and compiles each form IN-PROCESS (no Chez, no per-form
+# subprocess).  The host itself builds from the committed bootstrap/embed-repl.ll
+# with just clang + LLVM 22 -- Chez is only needed to regenerate that IR from
+# source.  Run the host directly, or via the convenience launcher:
+make build/repl-host && build/repl-host                        # NO Chez at all; ^D to exit
+build/repl-host --no-prelude                                   # faster start, no stdlib
+chez --libdirs src --script src/compile.ss --repl              # launcher: builds + execs the host
 #   scheme> (define (sq n) (* n n))
 #   scheme> (sq 9)          => 81
 #   scheme> (define sq 100) => 100   ; redefinition; later forms see the new binding
