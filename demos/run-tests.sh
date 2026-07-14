@@ -74,6 +74,7 @@ echo "string / char operations demos"
 check strops  demos/string-ops.scm     '(65 3 #\b "ell" foo)'  # char->integer/length/ref/substring/->symbol
 check strsym  demos/string-symbol.scm  '#t'                    # string->symbol interns (eq? to literal)
 check struni  demos/string-unicode.scm '(5 #\é "日本")'         # codepoint-indexed ops over non-ASCII
+check utf84   demos/utf8-4byte.scm      '("a😀b" grin😀)'         # 4-byte UTF-8 codepoint escaping (emit-cstring-in-language)
 check strchlib demos/string-char-lib.scm '(#t #f #t #f "foobar" "xxx" (#\a #\b) "héllo")'  # char cmp + string ctor library
 check strmut  demos/string-mutation.scm '("aba" (2 #\é) #\y #\x)'  # string-set! (splice, alias) + string-copy
 

@@ -68,12 +68,11 @@ back to a (new) prerequisite change; **tasks 2.x–3.x are blocked until they cl
   [[internal-defines]]: `parse-body` now peels a leading run of body defines and
   builds them via the same `build-program` transform the top level uses (`letrec*` semantics).
   The exact gate probe that failed (`(define (f x) (define (g y) …) …)`) now compiles.
-- **G2 — `emit.ss` byte/UTF-8/hex escaping.** `hex2`/`llvm-cstring` use `string->utf8`,
-  `bytevector-length`, `bytevector-u8-ref`, `(number->string b 16)` (radix arg — the
-  in-language `number->string` is base-10/one-arg), and `string-upcase`. None exist in
-  scheme-llvm. Fix path: rewrite the escaping in-language over `string-ref`/`char->integer`
-  with a hex-digit table and an in-language UTF-8 encoder, or grow the needed byte ops.
-  Recommend a new prerequisite change `emit-cstring-in-language`.
+- **G2 — `emit.ss` byte/UTF-8/hex escaping.** ✅ **CLOSED** by [[emit-cstring-in-language]]:
+  `hex2`/`llvm-cstring` are rewritten over `string-ref`/`char->integer` + `quotient`/
+  `remainder` (hex-digit table + in-language UTF-8 encoder), dropping `string->utf8`,
+  `bytevector-*`, radix `number->string`, `string-upcase`, and the `#x` literals. Emitted IR
+  is byte-identical (verified new-vs-old, incl. a 4-byte codepoint).
 - **G3 — path-C standalone I/O shell.** A native `schemec` filter must read all of stdin
   into a string and write the IR string to stdout, but the language has no stdin-read or
   raw string-write (`display`) primitive — the runtime only has `rt_write` (values, quoted).
@@ -87,6 +86,25 @@ Assembly work also remains (independent of the gaps): de-`library` `match.sls`/`
 into top-level `define-syntax`/`define`s, concatenate the `include`d passes into one program,
 and switch `core.ss`'s `read-forms` (Chez `read`/`open-input-string`) to the in-language
 `read-all-from-string` ([[stdin-source-reader]], done).
+
+**Additional latent gaps (found while closing G1/G2 — the initial 1.2 probe was shallow, a
+static scan + spot compiles; these surface only at a full core compile / the triple test):**
+
+- **G4 — `apply` over the binary `string-append` primitive.** The core uses
+  `(apply string-append <list>)` pervasively (esp. `emit.ss`), but scheme-llvm's
+  `string-append` is the 2-arg runtime primitive with no variadic/prelude wrapper, so
+  `apply`ing it over N args would arity-error. Fix: a prelude variadic `string-append` (fold
+  the binary primitive), or a `string-concat`/`string-join` the emitter uses instead.
+- **G5 — `#x` hex literals outside the escaping.** The in-language reader (`rd-*`) parses only
+  decimal integers, `#t`/`#f`, `#\`, `#(`; it does not read `#x…`. Any remaining `#x` literal
+  in the core source (several across the passes) is unreadable by a self-hosted `schemec`.
+  Fix: grow the reader to accept `#x`/`#b`/`#o` (small `rd-*` extension), or convert the core's
+  `#x` literals to decimal.
+- Likely more of the same class (e.g. `andmap` and other R6RS list procs the passes assume) —
+  enumerate them with a full assembled-core compile once G3/G4/G5 are in.
+
+A dedicated gap-sweep (assemble the whole core, compile, fix the first error, repeat) should
+precede task 2.1; each new gap becomes its own small prerequisite change.
 
 **Recommendation:** this umbrella change is correctly gated and should stay open/blocked.
 Land `internal-defines` (G1) and `emit-cstring-in-language` (G2) as new prerequisite changes,

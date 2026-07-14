@@ -34,24 +34,53 @@
 (define (reset-symbols!) (set! sym-globals '()) (set! sym-table '()) (set! sym-n 0))
 (define (symbol-globals) (apply string-append (reverse sym-globals)))
 
-(define (hex2 b)                  ; byte -> two uppercase hex digits
-  (let ([s (number->string b 16)])
-    (string-upcase (if (= (string-length s) 1) (string-append "0" s) s))))
+;; --- C-string escaping, expressed in the self-hostable subset -------------
+;; (change: emit-cstring-in-language) No string->utf8/bytevector ops, no radix
+;; number->string, no string-upcase, no #x literals -- just string/char access
+;; and quotient/remainder, so the emitter can compile itself.  Output is
+;; byte-for-byte identical to the previous bytevector-based version.
+(define hex-digits "0123456789ABCDEF")
+(define (hex2 b)                  ; byte 0..255 -> two uppercase hex digits
+  (string-append (string (string-ref hex-digits (quotient b 16)))
+                 (string (string-ref hex-digits (remainder b 16)))))
+
+;; Unicode scalar -> list of its UTF-8 byte values (1..4), via base-64 digit math
+;; (192=0xC0, 224=0xE0, 240=0xF0 lead bytes; 128=0x80 continuation).  Reproduces
+;; exactly what string->utf8 produced.
+(define (utf8-bytes cp)
+  (cond
+    [(< cp 128) (list cp)]
+    [(< cp 2048)
+     (list (+ 192 (quotient cp 64))
+           (+ 128 (remainder cp 64)))]
+    [(< cp 65536)
+     (list (+ 224 (quotient cp 4096))
+           (+ 128 (remainder (quotient cp 64) 64))
+           (+ 128 (remainder cp 64)))]
+    [else
+     (list (+ 240 (quotient cp 262144))
+           (+ 128 (remainder (quotient cp 4096) 64))
+           (+ 128 (remainder (quotient cp 64) 64))
+           (+ 128 (remainder cp 64)))]))
+
+(define (byte-escape b)           ; one UTF-8 byte -> its c"..." fragment
+  (if (and (>= b 32) (<= b 126) (not (= b 34)) (not (= b 92)))
+      (string (integer->char b))          ; printable ASCII except " (34) and \ (92)
+      (string-append "\\" (hex2 b))))      ; everything else -> \XX
 
 ;; escape a name for an LLVM c"..." literal; return (list escaped byte-count),
-;; the count including the trailing NUL.  Printable ASCII except " and \ go
-;; through verbatim; everything else (incl. UTF-8 bytes) as \XX.
+;; the count including the trailing NUL.  Walk the string by Unicode scalar,
+;; encode each to UTF-8 bytes, escape each byte.  Printable ASCII except " and \
+;; go through verbatim; everything else (incl. UTF-8 bytes) as \XX.
 (define (llvm-cstring name)
-  (let* ([bv (string->utf8 name)] [n (bytevector-length bv)])
-    (let loop ([i 0] [acc '()])
+  (let ([n (string-length name)])
+    (let loop ([i 0] [nbytes 0] [acc '()])
       (if (= i n)
-          (list (apply string-append (reverse acc)) (+ n 1))
-          (let ([b (bytevector-u8-ref bv i)])
+          (list (apply string-append (reverse acc)) (+ nbytes 1))
+          (let ([bs (utf8-bytes (char->integer (string-ref name i)))])
             (loop (+ i 1)
-                  (cons (if (and (>= b #x20) (<= b #x7e) (not (= b #x22)) (not (= b #x5c)))
-                            (string (integer->char b))
-                            (string-append "\\" (hex2 b)))
-                        acc)))))))
+                  (+ nbytes (length bs))
+                  (append (reverse (map byte-escape bs)) acc)))))))
 
 ;; emit a private constant global (prefix + counter) holding s's UTF-8 bytes and
 ;; a trailing NUL; return (list @global byte-length-without-NUL).
