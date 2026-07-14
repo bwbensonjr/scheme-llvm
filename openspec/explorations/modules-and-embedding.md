@@ -194,6 +194,11 @@ Two clarifying observations:
 
 ### The two genuinely new hard problems
 
+> The namespace/name-resolution model modules share with the embedded REPL is worked out in
+> `openspec/explorations/namespace-model.md` (a scope = a set of bindings; a module and a
+> REPL session are both scopes; the one real divergence is symbol mangling — stable/module-
+> qualified for exports vs. ephemeral/generation for a session).
+
 1. **Namespaces / import resolution (tractable design work).** Today everything is one
    flat global namespace. Modules need exported-vs-private, and the four import-set
    transforms (`only`/`except`/`prefix`/`rename`). All are compile-time name-set
