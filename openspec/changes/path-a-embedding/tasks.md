@@ -63,3 +63,16 @@
 - [ ] 6.5 Full `./run-all-tests.sh` roll-up is green (batch demos + backends unaffected).
 - [ ] 6.6 Verify the staleness graph: touch a compiler source, start the REPL, confirm the
   host rebuilds before the first form.
+
+## 7. Documentation
+
+- [ ] 7.1 Update `README.md` "Quick start" and "Interactive REPL" sections to describe the
+  new regime: `--repl` runs Chez-free via the embedded compiler in `build/repl-host`; note
+  the checked-in `compiler.ll` and that Chez is only needed to refresh it.
+- [ ] 7.2 Update the `README.md` Pipeline diagram / "Backends & process" text so the REPL
+  path reflects in-process embedding (no Chez compile step, no frame protocol).
+- [ ] 7.3 Refresh the test-harness list and any run instructions in `README.md` (and
+  `docs/PIPELINE.md` / `TOOLCHAIN.md` if they describe the REPL host build) so
+  `./run-all-tests.sh` and the individual harnesses are documented for the new flow.
+- [ ] 7.4 Update the "Self-hosting" / "Not yet done" notes in `README.md` to record that the
+  REPL is now Chez-free (Path A landed), leaving Chez only as the bootstrap.
