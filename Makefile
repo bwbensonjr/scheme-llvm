@@ -28,7 +28,7 @@ LDFLAGS    := $(shell $(LLVM_CONFIG) --ldflags --libs orcjit native --system-lib
 HOST       := build/repl-host
 CHEZ       := chez
 
-.PHONY: repl-host schemec clean
+.PHONY: repl-host schemec scheme-run clean
 repl-host: $(HOST)
 
 # Link; -rdynamic exports rt_* so JIT'd code resolves them from this process.
@@ -74,9 +74,47 @@ $(SCHEMEC): build/schemec.ll src/runtime/runtime.c Makefile | build
 	$(CC) -O2 -DRT_FILTER_MAIN -I$(GC_INC) -L$(GC_LIB) src/runtime/runtime.c build/schemec.ll -lgc -o $@
 	@echo "built $@"
 
+# --- in-process compile-and-run runner (change: path-a-embedding) ----------
+# `build/scheme-run` compiles AND runs a whole Scheme program in one process,
+# with no Chez and no clang/lli: the compiled compiler (bootstrap/embed.ll) is
+# LINKED into the runner; its ccc `scheme_entry` reads the program from stdin and
+# returns the emitted IR as a string, which src/run.cpp then JITs (ORC/LLJIT) and
+# runs.  bootstrap/embed.ll is a committed, host-agnostic stage-0 artifact (it
+# carries no target header), so a Chez-free checkout still links the runner; it is
+# regenerated here whenever the core sources change (same mtime caveat as the host
+# graph above).  The runner reuses build/runtime-host.o (RT_NO_MAIN).
+RUN        := build/scheme-run
+EMBED_LL   := bootstrap/embed.ll
+
+scheme-run: $(RUN)
+
+# assemble the core into one program with the embedded-compiler entry
+build/embed.scm: tools/assemble-core.ss $(CORE_SS) src/prelude.scm | build
+	$(CHEZ) --script tools/assemble-core.ss --embed-entry
+
+# compile the embedded compiler to host-agnostic IR (prelude prepended); the
+# committed stage-0 artifact.
+$(EMBED_LL): build/embed.scm $(DRIVER_SS) | bootstrap
+	$(CHEZ) --libdirs src --script src/compile.ss --emit-ir < build/embed.scm > $@
+
+# run.cpp compiled as C++ against the LLVM headers.
+build/run.o: src/run.cpp Makefile | build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# link: embedded compiler IR + runtime (no standalone main) + the runner host.
+$(RUN): build/run.o build/runtime-host.o $(EMBED_LL) Makefile
+	$(CXX) build/run.o build/runtime-host.o $(EMBED_LL) \
+	  -rdynamic $(LDFLAGS) -L$(GC_LIB) -lgc -o $@
+	@echo "built $@"
+
 build:
 	mkdir -p build
 
+bootstrap:
+	mkdir -p bootstrap
+
 clean:
 	rm -f $(HOST) build/host.o build/runtime-host.o \
-	      $(SCHEMEC) build/schemec.scm build/schemec.ll
+	      $(SCHEMEC) build/schemec.scm build/schemec.ll \
+	      $(RUN) build/run.o build/embed.scm
+	@echo "note: committed $(EMBED_LL) is left in place (regenerate with 'make $(EMBED_LL)')"

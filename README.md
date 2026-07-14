@@ -26,6 +26,11 @@ chez --libdirs src --script src/compile.ss demos/fact.scm --backend bitcode -o /
 chez --libdirs src --script src/compile.ss demos/fact.scm --dump          # print IL after each pass
 chez --libdirs src --script src/compile.ss demos/fact.scm --no-prelude
 
+# in-process compile-and-run: NO Chez, NO clang/lli, NO subprocess.  The compiled
+# compiler is linked into build/scheme-run (built on first use); it compiles the
+# program to IR in-process and JITs it via ORC/LLJIT.  (Needs LLVM 22.)
+build/scheme-run < demos/fact.scm                                         # => 120
+
 # interactive REPL (persistent ORC/LLJIT host; builds build/repl-host on first use)
 chez --libdirs src --script src/compile.ss --repl              # ^D to exit
 chez --libdirs src --script src/compile.ss --repl --no-prelude # faster start, no stdlib
@@ -39,6 +44,7 @@ chez --libdirs src --script src/compile.ss --repl --no-prelude # faster start, n
 # test harnesses (each also runnable on its own)
 demos/run-tests.sh              # compile+run every demo, compare to expected values
 demos/run-backends.sh           # assert AOT = JIT = bitcode for each demo
+demos/run-embedded.sh           # assert the in-process runner = AOT for each demo
 test/repl-frontend.ss           # REPL front-end unit tests (chez --script)
 test/repl-host-tests.sh         # persistent host, end-to-end
 test/repl-interactive-tests.sh  # interactive `--repl`, end-to-end
@@ -65,6 +71,9 @@ whole-program batch letrec supports) is not available interactively.
   `runtime/runtime.c`, and `prelude.scm` (standard library, prepended to every program).
 - `src/repl/` — the persistent REPL host: `host.cpp` (LLVM ORC/LLJIT); built by the
   top-level `Makefile` (`build-host.sh` is a thin wrapper over `make build/repl-host`).
+- `src/run.cpp` — the in-process runner (`build/scheme-run`): links the compiled compiler
+  (`bootstrap/embed.ll`, a committed host-agnostic stage-0 artifact) and JITs its output,
+  so a whole program is compiled *and* run in one process with no Chez/clang/lli.
 - `demos/` — example programs and the `run-tests.sh` / `run-backends.sh` harnesses.
 - `test/` — REPL test harnesses and the front-end unit tests.
 - `run-all-tests.sh` — top-level runner that invokes every `demos/` and `test/`
@@ -128,6 +137,12 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 
 **Backends & process**
 - AOT / JIT / bitcode from one emitted `.ll`, with a 3-way equivalence harness.
+- **In-process embedded run** (`build/scheme-run`, Path A — mechanism): the compiled
+  compiler is linked into a JIT host (`src/run.cpp`); its ccc `scheme_entry` reads the
+  program, returns the emitted IR as a string, and the host JITs and runs it — a whole
+  program compiled *and* run in one process with **no Chez, no clang/lli, no subprocess**.
+  A parity harness checks the runner agrees with AOT on every demo (dev→ship fidelity). The
+  compiler IR is a committed, host-agnostic stage-0 artifact (`bootstrap/embed.ll`).
 - **Interactive REPL** (`--repl`) on a persistent LLVM ORC/LLJIT host: per-form modules
   added to a long-lived JIT with a shared GC heap / symbol table / runtime, so definitions,
   closures, heap values, and redefinition persist across forms; runtime traps (arity errors)
@@ -150,11 +165,14 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   survives) but still abort the standalone AOT/JIT executables; no general condition system.
 
 **Self-hosting (the north star)**
-- The compiler is still Chez-hosted and uses the host `read`. The concrete path: swap host
-  `read` for the Scheme `read-from-string`, then port the passes to run within the compiled
-  subset — what the recent data-type / prelude / reader changes were building toward. The
-  REPL's execution host is already Chez-free; see `openspec/explorations/chez-free-repl.md`
-  for the roadmap (the gap is the compiler front end).
+- The compiler compiles itself to a byte-identical fixed point, and there are now two
+  Chez-free ways to *use* it: the batch `schemec` filter (Path C, subprocess) and the
+  in-process `build/scheme-run` (Path A — mechanism, whole program compiled and JIT-run in
+  one process). The **interactive `--repl` front end is still Chez**: its stateful,
+  incremental orchestration (persistent env, per-form modules, compile-error rollback) has
+  not yet been ported into the embedded compiler — that is the follow-on
+  `repl-embedded-incremental` change (gated on the `error`/`guard` downgrade). See
+  `openspec/explorations/modules-and-embedding.md` and `…/chez-free-repl.md` for the roadmap.
 
 **Performance / cleanup (deferred by design)**
 - No dead-code elimination (the whole prelude is emitted into every program); O(n)

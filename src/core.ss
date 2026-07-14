@@ -83,6 +83,18 @@
 (define (compile-source-string str)
   (compile-forms (read-forms-from-string str) no-dump))
 
+;; source text + prelude text -> IR text (no header).  The prelude-aware sibling
+;; of compile-source-string: it applies the same user-wins shadowing the batch
+;; driver does (with-prelude), but takes the prelude as *text* rather than
+;; reading a file, so it stays free of filesystem/subprocess I/O.  Used by the
+;; embedded compiler (change: path-a-embedding), whose entry bakes the prelude
+;; source in as a string constant and passes the user program on stdin.
+(define (compile-source-with-prelude prelude-str user-str)
+  (compile-forms
+    (with-prelude (read-forms-from-string prelude-str)
+                  (read-forms-from-string user-str))
+    no-dump))
+
 ;; shared back half of the pipeline for one core-IL expression.  The REPL feeds
 ;; forms through this incrementally (against a persistent env); batch compilation
 ;; runs the same passes over a whole program in `compile-forms`.

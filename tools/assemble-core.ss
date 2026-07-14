@@ -31,7 +31,18 @@
 ;; build/core-self.scm, unchanged.
 (define filter-main? (and (member "--filter-main" (command-line-arguments)) #t))
 
-(define out-path (if filter-main? "build/schemec.scm" "build/core-self.scm"))
+;; With --embed-entry (change: path-a-embedding), emit the in-process embedding
+;; program build/embed.scm: the same assembled core, but ending in an entry that
+;; *returns* the emitted IR as a value rather than displaying it, so a C/C++ host
+;; that links this program can call its ccc `scheme_entry` and read the IR string
+;; back.  The standard prelude is baked in as a string constant so compilation is
+;; prelude-correct (user-wins shadowing via with-prelude) with no file I/O.
+(define embed-entry? (and (member "--embed-entry" (command-line-arguments)) #t))
+
+(define out-path
+  (cond [embed-entry?  "build/embed.scm"]
+        [filter-main?  "build/schemec.scm"]
+        [else          "build/core-self.scm"]))
 
 ;; ---- source layout -------------------------------------------------------
 (define pass-files
@@ -133,21 +144,34 @@
         [else (pretty-print f out) (newline out)]))
     (read-file-forms "src/core.ss"))
 
-  (if filter-main?
-      (begin
-        (banner out "program entry: the standalone `schemec` stdin->stdout filter")
-        (fprintf out ";; A complete program must end in an expression.  This is the\n")
-        (fprintf out ";; self-hosted `schemec`: read all source text from stdin, compile it\n")
-        (fprintf out ";; to IR, and write the IR to stdout (no header/toolchain -- those stay\n")
-        (fprintf out ";; the driver's job).  Built with the runtime's RT_FILTER_MAIN so the\n")
-        (fprintf out ";; entry's value is not printed after the IR.\n")
-        (pretty-print '(display (compile-source-string (read-all-stdin))) out))
-      (begin
-        (banner out "program entry: exercise the whole pipeline (the program's value)")
-        (fprintf out ";; A complete program must end in an expression; this one runs the\n")
-        (fprintf out ";; full forms->IR pipeline over a tiny source so every definition is\n")
-        (fprintf out ";; reachable and the pipeline is exercised end-to-end.\n")
-        (pretty-print '(compile-source-string "(+ 1 2)") out)))
+  (cond
+    [embed-entry?
+     (banner out "program entry: the in-process embedded compiler")
+     (fprintf out ";; A complete program must end in an expression.  This is the embedded\n")
+     (fprintf out ";; compiler (change: path-a-embedding): read the user program from stdin,\n")
+     (fprintf out ";; prepend the baked-in prelude (user-wins shadowing via with-prelude),\n")
+     (fprintf out ";; compile to IR, and RETURN the IR string as the entry's value.  The\n")
+     (fprintf out ";; ccc `scheme_entry` is called directly by the linking host, which reads\n")
+     (fprintf out ";; the returned string's bytes and JITs the IR.  No header/toolchain --\n")
+     (fprintf out ";; those stay the host's job.  *prelude-source* is the standard prelude\n")
+     (fprintf out ";; baked in as a string constant so the compiler needs no file I/O.\n")
+     (write `(define *prelude-source* ,(file->string "src/prelude.scm")) out)
+     (newline out)
+     (pretty-print '(compile-source-with-prelude *prelude-source* (read-all-stdin)) out)]
+    [filter-main?
+     (banner out "program entry: the standalone `schemec` stdin->stdout filter")
+     (fprintf out ";; A complete program must end in an expression.  This is the\n")
+     (fprintf out ";; self-hosted `schemec`: read all source text from stdin, compile it\n")
+     (fprintf out ";; to IR, and write the IR to stdout (no header/toolchain -- those stay\n")
+     (fprintf out ";; the driver's job).  Built with the runtime's RT_FILTER_MAIN so the\n")
+     (fprintf out ";; entry's value is not printed after the IR.\n")
+     (pretty-print '(display (compile-source-string (read-all-stdin))) out)]
+    [else
+     (banner out "program entry: exercise the whole pipeline (the program's value)")
+     (fprintf out ";; A complete program must end in an expression; this one runs the\n")
+     (fprintf out ";; full forms->IR pipeline over a tiny source so every definition is\n")
+     (fprintf out ";; reachable and the pipeline is exercised end-to-end.\n")
+     (pretty-print '(compile-source-string "(+ 1 2)") out)])
 
   (close-port out)
   (fprintf (current-error-port) "wrote ~a\n" out-path))

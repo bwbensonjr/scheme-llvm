@@ -219,6 +219,13 @@ val rt_make_string(const char *bytes, intptr_t len) {
 static intptr_t    str_len(val v)   { return as_ptr(v)[1]; }
 static const char *str_bytes(val v) { return (const char *)as_ptr(v)[2]; }
 
+/* Exported string accessors so an embedding C/C++ host can read the bytes of a
+ * scheme string value returned across the FFI boundary (e.g. the IR text the
+ * embedded compiler's scheme_entry returns).  Thin non-static wrappers over the
+ * internal helpers above (change: path-a-embedding). */
+intptr_t    rt_string_len(val v)   { return str_len(v); }
+const char *rt_string_bytes(val v) { return str_bytes(v); }
+
 /* char: { HDR_CHAR, codepoint } -- the full Unicode scalar value */
 static intptr_t char_cp(val v) { return as_ptr(v)[1]; }
 
