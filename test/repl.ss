@@ -20,10 +20,11 @@
 (include "src/passes/convert-closures.ss")
 (include "src/passes/lower.ss")
 (include "src/emit.ss")
+;; Host-agnostic libgc paths + the resolved C compiler (`cc`); replaces the
+;; former hardcoded Homebrew constants.  See `configurable-llvm-toolchain`.
+(include "src/toolchain.ss")
 
 (define runtime-c "src/runtime/runtime.c")
-(define gc-inc "/opt/homebrew/include")
-(define gc-lib "/opt/homebrew/lib")
 
 (define err-port (current-error-port))
 
@@ -37,7 +38,7 @@
 (define cc-path  (string-append workdir "/cc.err"))
 
 (define (host-target-header)
-  (let* ([pipes (process "clang -S -emit-llvm -x c -o - - 2>/dev/null")]
+  (let* ([pipes (process (string-append (cc) " -S -emit-llvm -x c -o - - 2>/dev/null"))]
          [from (car pipes)] [to (cadr pipes)])
     (put-string to "int __scheme_llvm_probe;\n")
     (close-port to)
@@ -73,7 +74,7 @@
            [text  (string-append (host-target-header) (emit-repl-batch progs))])
       (call-with-output-file ll-path (lambda (o) (display text o)) 'replace)
       (if (zero? (system (string-append
-                           "clang -I" gc-inc " -L" gc-lib " " runtime-c " "
+                           (cc) " -I" gc-inc " -L" gc-lib " " runtime-c " "
                            ll-path " -lgc -o " exe-path " 2> " cc-path)))
           (begin (system (string-append exe-path " > " out-path))
                  (values 'ok (read-file out-path)))

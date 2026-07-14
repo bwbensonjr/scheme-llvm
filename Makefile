@@ -15,12 +15,15 @@
 # `rm build/repl-host`.  Accepted limitation; a content-hash stamp would be the
 # only fully robust fix and is out of scope.
 
-LLVM       := /opt/homebrew/opt/llvm@22
-CXX        := $(LLVM)/bin/clang++
-CC         := $(LLVM)/bin/clang
-LLVM_CONFIG := $(LLVM)/bin/llvm-config
-GC_INC     := /opt/homebrew/include
-GC_LIB     := /opt/homebrew/lib
+# Host-agnostic toolchain via the shared resolver (tools/toolchain.sh) -- the
+# same source of truth the Scheme driver and test harnesses use.  Override with
+# LLVM_CONFIG/LLVM_PREFIX or GC_PREFIX; see `configurable-llvm-toolchain`.
+LLVM_CONFIG := $(shell tools/toolchain.sh llvm-config)
+LLVM_BINDIR := $(shell tools/toolchain.sh llvm-bindir)
+CXX        := $(LLVM_BINDIR)/clang++
+CC         := $(LLVM_BINDIR)/clang
+GC_INC     := $(shell tools/toolchain.sh gc-inc)
+GC_LIB     := $(shell tools/toolchain.sh gc-lib)
 
 CXXFLAGS   := $(shell $(LLVM_CONFIG) --cxxflags) -I$(GC_INC)
 LDFLAGS    := $(shell $(LLVM_CONFIG) --ldflags --libs orcjit native --system-libs)

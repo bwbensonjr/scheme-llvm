@@ -11,10 +11,74 @@ each form is JIT-compiled into a long-lived session. The compiler is written in 
 transparent stages (see `CLAUDE.md`). Development is OpenSpec-driven, tracked under
 `openspec/`.
 
+## Installing the toolchain
+
+The compiler needs **Chez Scheme** (invoked as `chez`), **Boehm GC** (`libgc`), and — for the
+JIT, bitcode, and REPL backends — **LLVM 22**. Nothing is hardcoded to a specific install
+location: `tools/toolchain.sh` discovers LLVM 22 and libgc on the host, and
+`tools/toolchain.sh check` prints exactly what it resolved. Override discovery with
+`LLVM_CONFIG` or `LLVM_PREFIX` (and `GC_PREFIX`, or `GC_INC`/`GC_LIB`) if your install lives
+somewhere unusual.
+
+### macOS (Homebrew)
+
+```sh
+brew install llvm@22 bdw-gc chezscheme
+```
+
+The `llvm@22` keg (at `/opt/homebrew/opt/llvm@22`), libgc, and the `chez` command are all found
+automatically; the AOT backend uses Apple's own `clang`.
+
+### Ubuntu / Debian
+
+LLVM 22 is newer than the distribution's repositories, so add the official LLVM apt repository
+first. The `llvm.sh` helper from <https://apt.llvm.org> adds the repo and installs the base
+`clang-22`/`llvm-22`:
+
+```sh
+wget https://apt.llvm.org/llvm.sh
+chmod +x llvm.sh
+sudo ./llvm.sh 22
+```
+
+Then install the LLVM 22 development packages, libgc, and the C++ standard library the REPL
+host links against:
+
+```sh
+sudo apt-get install -y \
+  llvm-22 llvm-22-dev llvm-22-runtime clang-22 \
+  libgc-dev libstdc++-14-dev
+```
+
+Notes:
+
+- **`libstdc++-14-dev`** matches the GCC install LLVM's `clang++` selects by default (the
+  highest present — gcc-14 on Ubuntu 24.04). Without it the REPL host build fails with
+  `'type_traits' file not found`.
+- If `apt` reports unmet dependencies for `libz3`/`libobjc`, enable the **universe** component
+  (`sudo add-apt-repository universe`) — LLVM 22's dependencies live there.
+- **Chez Scheme:** the project targets Chez **10.x**; Ubuntu's `chezscheme` package is 9.5.8
+  (too old), so build a recent Chez from source. However installed, the binary is often named
+  `scheme` rather than `chez`. Because Chez selects its boot file from the name it is invoked
+  as, a plain `chez` symlink fails (`cannot find compatible chez.boot`); use a wrapper on your
+  `PATH` instead:
+
+  ```sh
+  printf '#!/bin/sh\nexec "$(command -v scheme)" "$@"\n' > ~/.local/bin/chez
+  chmod +x ~/.local/bin/chez
+  ```
+
+### Verify
+
+```sh
+tools/toolchain.sh check     # resolved llvm-config, tool dir, cc, and libgc paths
+```
+
 ## Quick start
 
-Requires `chez` (Chez Scheme), `clang`, and Boehm GC (`libgc`, e.g. `brew install bdw-gc`);
-the JIT and bitcode backends additionally use LLVM 22 (`brew install llvm@22`).
+Install the toolchain first — see [Installing the toolchain](#installing-the-toolchain) for
+macOS and Linux steps. In short: `chez` (Chez Scheme), Boehm GC (`libgc`), and LLVM 22; the
+build discovers LLVM 22 and libgc on the host, so no paths are hardcoded.
 
 ```sh
 # compile and run a demo (AOT is the default backend)
@@ -55,9 +119,10 @@ entered form is compiled to its own module and added to a long-lived JIT in whic
 heap, symbol table, and runtime stay alive, so definitions, closures, and heap values
 persist across forms and top-level names can be redefined. Runtime traps (e.g. arity errors)
 are isolated, so a bad form is reported and the session continues; `^D` (end of input) exits.
-It needs the LLVM 22 development install (headers + `llvm-config`, from the same `llvm@22`
-keg). References resolve to earlier forms only — mutual top-level recursion (which the
-whole-program batch letrec supports) is not available interactively.
+It needs the LLVM 22 development install (headers + `llvm-config`; see
+[Installing the toolchain](#installing-the-toolchain)). References resolve to earlier forms
+only — mutual top-level recursion (which the whole-program batch letrec supports) is not
+available interactively.
 
 ## Layout
 

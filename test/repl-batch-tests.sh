@@ -7,6 +7,11 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# Host-agnostic toolchain (replaces hardcoded Homebrew paths).
+CC="$(tools/toolchain.sh cc)"           || exit 1
+GC_INC="$(tools/toolchain.sh gc-inc)"   || exit 1
+GC_LIB="$(tools/toolchain.sh gc-lib)"   || exit 1
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
@@ -18,7 +23,7 @@ check () {  # name  expected  <<forms
         >/dev/null 2>"$TMP/$name.err"; then
     echo "  [FAIL] $name (emit error)"; sed 's/^/         /' "$TMP/$name.err"; fail=$((fail+1)); return
   fi
-  if ! clang -I/opt/homebrew/include -L/opt/homebrew/lib src/runtime/runtime.c \
+  if ! "$CC" -I"$GC_INC" -L"$GC_LIB" src/runtime/runtime.c \
         "$TMP/$name.ll" -lgc -o "$TMP/$name" 2>"$TMP/$name.cc"; then
     echo "  [FAIL] $name (clang error)"; sed 's/^/         /' "$TMP/$name.cc"; fail=$((fail+1)); return
   fi

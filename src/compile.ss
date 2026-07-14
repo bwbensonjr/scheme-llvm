@@ -15,9 +15,11 @@
 ;; header, and the toolchain/JIT -- and delegates the forms->IR step to the core.
 (include "src/core.ss")
 
+;; Host-agnostic LLVM 22 + libgc locations (gc-inc/gc-lib/gc-shared, and the
+;; llvm-bin/cc procedures).  Replaces the former hardcoded Homebrew constants.
+(include "src/toolchain.ss")
+
 (define runtime-c "src/runtime/runtime.c")
-(define gc-inc "/opt/homebrew/include")
-(define gc-lib "/opt/homebrew/lib")
 
 ;; Module header: the `target datalayout`/`target triple` lines for the host.
 ;; Without them clang fills in its own effective triple when it loads our IR and
@@ -25,7 +27,7 @@
 ;; empty translation unit -- the canonical, portable way to learn the host's
 ;; exact triple (which -print-target-triple does not report on macOS).
 (define (host-target-header)
-  (let* ([pipes (process "clang -S -emit-llvm -x c -o - - 2>/dev/null")]
+  (let* ([pipes (process (string-append (cc) " -S -emit-llvm -x c -o - - 2>/dev/null"))]
          [from (car pipes)]
          [to   (cadr pipes)])
     (put-string to "int __scheme_llvm_probe;\n")
@@ -73,12 +75,11 @@
     (let ([out (open-output-file ll 'replace)]) (display text out) (close-port out))))
 
 ;; --- backends -----------------------------------------------------------
-;; One emitted OUT.ll drives three exits.  AOT stays on the system clang
-;; (unchanged).  The JIT and bitcode exits use the pinned LLVM 22 tools by
-;; absolute path (Homebrew keg, off PATH).
-(define llvm-bin "/opt/homebrew/opt/llvm@22/bin/")
-(define (tool t) (string-append llvm-bin t))
-(define gc-dylib (string-append gc-lib "/libgc.dylib"))
+;; One emitted OUT.ll drives three exits.  AOT uses the resolved C compiler
+;; (`cc`: a system clang if present, else the LLVM 22 clang -- design D4).  The
+;; JIT and bitcode exits use the resolved LLVM 22 tools (`llvm-bin`), by
+;; absolute path via `tool`.
+(define (tool t) (string-append (llvm-bin) t))
 (define (sh who cmd)
   (unless (zero? (system cmd)) (error 'compile (string-append who " failed") cmd)))
 
@@ -88,12 +89,12 @@
       (unless (file-exists? (tool t))
         (error 'compile
                (string-append "required LLVM 22 tool not found: " (tool t)
-                              "  (install with: brew install llvm@22)"))))
+                              "  (run `" toolchain-script " check`, or set LLVM_CONFIG/LLVM_PREFIX)"))))
     '("lli" "llvm-as" "llvm-link" "clang")))
 
-;; AOT (default): textual IR -> native exe via the system clang.  Unchanged.
+;; AOT (default): textual IR -> native exe via the resolved C compiler.
 (define (link ll exe)
-  (sh "clang" (string-append "clang -I" gc-inc " -L" gc-lib " " runtime-c " " ll " -lgc -o " exe)))
+  (sh "cc" (string-append (cc) " -I" gc-inc " -L" gc-lib " " runtime-c " " ll " -lgc -o " exe)))
 
 ;; Bitcode: assemble OUT.ll -> OUT.bc (the inspectable/opt-able artifact),
 ;; then codegen the .bc + runtime to a native exe (LLVM 22 clang).
@@ -113,7 +114,7 @@
     (sh "llvm-as"    (string-append (tool "llvm-as") " " ll " -o " pbc))
     (sh "clang-emit" (string-append (tool "clang") " -I" gc-inc " -emit-llvm -c " runtime-c " -o " rbc))
     (sh "llvm-link"  (string-append (tool "llvm-link") " " pbc " " rbc " -o " cbc))
-    (sh "lli"        (string-append (tool "lli") " -load=" gc-dylib " " cbc))))
+    (sh "lli"        (string-append (tool "lli") " -load=" gc-shared " " cbc))))
 
 (define (strip-ext s)
   (let ([i (let loop ([i (- (string-length s) 1)])

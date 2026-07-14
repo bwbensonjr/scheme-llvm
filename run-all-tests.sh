@@ -2,8 +2,9 @@
 # Aggregate test runner: invokes every harness in the project in one shot and
 # prints a roll-up.  This is the single entry point for "run the full set"; the
 # individual harnesses under demos/ and test/ remain runnable on their own.
-# Needs chez, system clang, libgc, and (for JIT/bitcode/REPL) LLVM 22 at
-# /opt/homebrew/opt/llvm@22.  Run from anywhere: ./run-all-tests.sh
+# Needs chez, a C compiler, libgc, and (for JIT/bitcode/REPL) LLVM 22.  The
+# toolchain is discovered on the host (see tools/toolchain.sh; override with
+# LLVM_CONFIG/LLVM_PREFIX or GC_PREFIX).  Run from anywhere: ./run-all-tests.sh
 set -u
 cd "$(dirname "$0")"
 
