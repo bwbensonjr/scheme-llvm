@@ -125,6 +125,54 @@
 (define (fold-right f acc xs)
   (if (null? xs) acc (f (car xs) (fold-right f acc (cdr xs)))))
 
+;;; --- additional list/utility procedures (self-host-gap-sweep G10) ----------
+;;; The compiler core assumes these; all are pure Scheme over existing prims.
+;;; (predicate-taking procs take the predicate first, per R6RS.)
+
+;; apply a procedure to each element for effect; returns the unspecified value.
+(define (for-each f xs)
+  (if (null? xs) (if #f #f) (begin (f (car xs)) (for-each f (cdr xs)))))
+
+;; #t iff the predicate holds for every element (short-circuits on #f).
+(define (andmap p xs)
+  (if (null? xs) #t (if (p (car xs)) (andmap p (cdr xs)) #f)))
+
+;; first tail whose head satisfies the predicate, else #f.
+(define (memp p xs)
+  (if (null? xs) #f (if (p (car xs)) xs (memp p (cdr xs)))))
+
+;; fourth-element accessor (extends the cxr set one deeper).
+(define (cadddr x) (car (cdddr x)))
+
+;; #t iff a proper list (walks to null; a dotted tail yields #f).
+(define (list? x)
+  (if (null? x) #t (if (pair? x) (list? (cdr x)) #f)))
+
+(define (zero? n) (= n 0))
+
+;; the sublist after n elements, the nth element, and the first n elements.
+(define (list-tail xs n) (if (zero? n) xs (list-tail (cdr xs) (- n 1))))
+(define (list-ref xs n) (car (list-tail xs n)))
+(define (list-head xs n)
+  (if (zero? n) (quote ()) (cons (car xs) (list-head (cdr xs) (- n 1)))))
+
+;; a list of n copies of x.
+(define (make-list n x) (if (zero? n) (quote ()) (cons x (make-list (- n 1) x))))
+
+;; the list (0 1 ... n-1).
+(define (iota n)
+  (let loop ([i 0] [acc (quote ())])
+    (if (= i n) (reverse acc) (loop (+ i 1) (cons i acc)))))
+
+;; the larger of two numbers.
+(define (max a b) (if (< a b) b a))
+
+;; the unspecified value (matching (if #f #f)).
+(define (void) (if #f #f))
+
+;; construct a string from character arguments (via the list->string primitive).
+(define (string . cs) (list->string cs))
+
 ;;; --- character / string library (string-char-library) ---------------------
 ;;; char comparisons are n-ary and chained, reducing through char->integer and
 ;;; the numeric comparisons.  `op` is a lambda wrapper (primitives are not
