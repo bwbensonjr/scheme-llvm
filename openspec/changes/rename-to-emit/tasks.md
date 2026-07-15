@@ -26,8 +26,8 @@
 
 ## 5. Repository rename and hosting
 
-- [ ] 5.1 Merge the in-repo edits to `main`.
-- [ ] 5.2 Rename the GitHub repository `bwbensonjr/scheme-llvm` → `bwbensonjr/emit`.
-- [ ] 5.3 Update the GitHub repository description to name the project *Emit*.
-- [ ] 5.4 Update the local `origin` remote URL to the renamed repository (`git remote set-url origin ssh://git@github.com/bwbensonjr/emit`).
-- [ ] 5.5 Verify `git fetch` / `git push` work against the new remote and close issue #2.
+- [x] 5.1 Merge the in-repo edits to `main` (fast-forward c37e808..c21829b).
+- [x] 5.2 Rename the GitHub repository `bwbensonjr/scheme-llvm` → `bwbensonjr/emit` (required switching gh auth to owner account `bwbensonjr`; `bbenson-hbs` has only READ).
+- [x] 5.3 Update the GitHub repository description to "Emit — a self-hosting Scheme→LLVM compiler".
+- [x] 5.4 Update the local `origin` remote URL to the renamed repository (`ssh://git@github.com/bwbensonjr/emit`).
+- [x] 5.5 Verify `git fetch` / `git push` work against the new remote (main pushed, fetch clean) and close issue #2 (closed).
