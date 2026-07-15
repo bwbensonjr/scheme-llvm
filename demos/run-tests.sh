@@ -1,20 +1,46 @@
 #!/usr/bin/env bash
-# End-to-end test harness (task 1.3): compile each demo, run it, compare stdout
-# to the expected value. Run from the repo root: demos/run-tests.sh
+# End-to-end demo-value harness: run each demo, compare stdout to the expected
+# value.  Two backends drive the SAME expected values (change:
+# self-hosting-completion, design D5):
+#   RUNNER=scheme-run (default)  Chez-FREE: build/scheme-run compiles+runs the
+#                                demo in-process (the shipped runner, no Chez).
+#   RUNNER=aot                   Chez: chez compile.ss -> native exe (dev/CI).
+# Run from the repo root:  [RUNNER=aot] demos/run-tests.sh
 set -u
 cd "$(dirname "$0")/.."
+
+RUNNER="${RUNNER:-scheme-run}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
+CE=200   # compile-error sentinel return code (distinct from any demo's exit)
+
+# compile_and_run <name> <src>: writes the program's stdout to $TMP/$name.out and
+# stderr to $TMP/$name.run; returns the run's exit code, or $CE on a compile error
+# (aot only -- the Chez-free runner compiles and runs in one process).
+compile_and_run () {
+  local name="$1" src="$2"
+  if [ "$RUNNER" = aot ]; then
+    if ! chez --libdirs src --script src/compile.ss "$src" -o "$TMP/$name" \
+          >/dev/null 2>"$TMP/$name.err"; then
+      cp "$TMP/$name.err" "$TMP/$name.run" 2>/dev/null || true
+      return $CE
+    fi
+    timeout 60 "$TMP/$name" >"$TMP/$name.out" 2>"$TMP/$name.run"; return $?
+  else
+    timeout 60 build/scheme-run < "$src" >"$TMP/$name.out" 2>"$TMP/$name.run"; return $?
+  fi
+}
 
 check () {  # name  source  expected
   local name="$1" src="$2" want="$3"
-  if ! chez --libdirs src --script src/compile.ss "$src" -o "$TMP/$name" >/dev/null 2>"$TMP/$name.err"; then
+  compile_and_run "$name" "$src"; local rc=$?
+  if [ "$rc" -eq "$CE" ]; then
     echo "  [FAIL] $name  (compile error)"; sed 's/^/         /' "$TMP/$name.err"; fail=$((fail+1)); return
   fi
-  local got; got="$(timeout 60 "$TMP/$name")"
+  local got; got="$(cat "$TMP/$name.out")"
   if [ "$got" = "$want" ]; then
     echo "  [OK  ] $name => $got"; pass=$((pass+1))
   else
@@ -24,16 +50,19 @@ check () {  # name  source  expected
 
 check_fail () {  # name  source   -- expects a clean compile but a non-zero run
   local name="$1" src="$2"
-  if ! chez --libdirs src --script src/compile.ss "$src" -o "$TMP/$name" >/dev/null 2>"$TMP/$name.err"; then
+  compile_and_run "$name" "$src"; local rc=$?
+  if [ "$rc" -eq "$CE" ]; then
     echo "  [FAIL] $name  (compile error)"; sed 's/^/         /' "$TMP/$name.err"; fail=$((fail+1)); return
   fi
-  timeout 60 "$TMP/$name" >/dev/null 2>"$TMP/$name.run"; local rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "  [OK  ] $name => exit $rc ($(head -1 "$TMP/$name.run"))"; pass=$((pass+1))
   else
     echo "  [FAIL] $name => exit 0  (expected non-zero, arity error)"; fail=$((fail+1))
   fi
 }
+
+# The Chez-free default needs the shipped runner (links committed IR; no Chez).
+[ "$RUNNER" = aot ] || make scheme-run >/dev/null 2>&1 || { echo "failed to build scheme-run"; exit 1; }
 
 echo "core-lambda-slice demos"
 check fact      demos/fact.scm      120

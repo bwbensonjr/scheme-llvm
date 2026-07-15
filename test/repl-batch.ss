@@ -11,7 +11,9 @@
 ;;;
 ;;; Usage: chez --libdirs src --script test/repl-batch.ss SRC.scm -o OUT.ll
 
-(import (chezscheme) (match) (util))
+(import (chezscheme))
+(include "src/match.scm")           ; flat source (change: self-hosting-completion)
+(include "src/util.scm")
 (include "src/parse.ss")
 (include "src/passes/recognize-let.ss")
 (include "src/passes/convert-assignments.ss")

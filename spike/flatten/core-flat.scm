@@ -1,23 +1,14 @@
-;;; core.ss -- the pure compiler core: source forms (or text) -> LLVM IR text.
-;;;
-;;; This is the self-hosting target: text in -> IR text out.  It performs NO
-;;; file, subprocess, or external-port I/O.  Everything effectful -- reading the
-;;; source file, reading the prelude, supplying the host target-triple header,
-;;; writing the .ll, and invoking the C toolchain / JIT -- lives in the driver
-;;; (compile.ss).  Keeping that surface out of the core means self-hosting never
-;;; has to bring the filesystem or subprocess API into the language.
-;;;
-;;; FLAT SOURCE (change: self-hosting-completion): this file is concatenation-
-;;; ready.  The passes are NOT `(include ...)`d here -- they are separate flat
-;;; files concatenated ahead of this one by the ordered-`cat` assembly (see the
-;;; Makefile `regen` recipe / `src/README.md`).  The reader is the in-language
-;;; `read-all-from-string` (defined in the prelude), so the core needs no ports.
-;;; The Chez-hosted driver/tests include the same flat files (no separate library
-;;; tree), so there is one live source.
+;;; core-flat.scm -- the pure compiler core, flattened out of core.ss (change:
+;;; self-hosting-completion).  Identical to src/core.ss except:
+;;;   * the `(include "src/passes/...")` block is dropped -- the passes are
+;;;     concatenated ahead of this file instead;
+;;;   * the port-based `read-forms`/`read-forms-from-string` (which need
+;;;     open-input-string / read, outside the language) are replaced by a single
+;;;     `read-forms-from-string` over the prelude's in-language
+;;;     `read-all-from-string`.
+;;; Everything else is verbatim.
 
 ;; --- reader (self-hostable; no ports) ------------------------------------
-;; `read-all-from-string` is provided by the prelude (which is prepended to every
-;; program the compiler compiles, including the compiler's own source).
 (define (read-forms-from-string str) (read-all-from-string str))
 
 ;; --- prelude assembly (pure list ops over already-read forms) ------------

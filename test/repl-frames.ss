@@ -9,7 +9,9 @@
 ;;;
 ;;; This is a batch stand-in for the Group 5 interactive driver's transport.
 
-(import (chezscheme) (match) (util))
+(import (chezscheme))
+(include "src/match.scm")           ; flat source (change: self-hosting-completion)
+(include "src/util.scm")
 (include "src/parse.ss")
 (include "src/passes/recognize-let.ss")
 (include "src/passes/convert-assignments.ss")

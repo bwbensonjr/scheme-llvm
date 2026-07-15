@@ -5,7 +5,8 @@
 ;;; the rest of the pipeline.  Added by change: port-match-to-syntax-rules to
 ;;; cover the ellipsis-escape (... ...) needed to host a syntax-rules matcher.
 
-(import (chezscheme) (util))
+(import (chezscheme))
+(include "src/util.scm")            ; flat source (change: self-hosting-completion)
 (include "src/passes/expand.ss")
 
 (define pass 0)

@@ -8,12 +8,38 @@
 ;;; with --dump), emits OUT.ll, and links it with the C runtime + libgc into the
 ;;; executable OUT.
 
-(import (chezscheme) (match) (util))
+(import (chezscheme))
 
-;; The pure forms->IR core (reader/expander/passes/emit) lives in core.ss.  This
-;; file is the driver: it owns every effect -- file reads/writes, the host target
-;; header, and the toolchain/JIT -- and delegates the forms->IR step to the core.
+;; The Chez-hosted driver includes the SAME flat source the Chez-free `cat`
+;; assembly concatenates (change: self-hosting-completion) -- there is no separate
+;; `(library ...)` tree to maintain.  `match`/`util` are flat files (no library
+;; wrapper), the passes are flat, and `core.ss` no longer `(include ...)`s them,
+;; so the driver concatenates them here in the same order the `regen` recipe does.
+;; This file remains the driver: it owns every effect -- file reads/writes, the
+;; host target header, and the toolchain/JIT -- and delegates forms->IR to core.
+(include "src/match.scm")
+(include "src/util.scm")
+(include "src/parse.ss")
+(include "src/passes/expand.ss")
+(include "src/passes/recognize-let.ss")
+(include "src/passes/convert-assignments.ss")
+(include "src/passes/convert-closures.ss")
+(include "src/passes/lower.ss")
+(include "src/emit.ss")
 (include "src/core.ss")
+
+;; Port-based reader (Chez I/O; the driver owns effects).  `core.ss` no longer
+;; defines this -- the self-hostable core has no ports -- so the driver supplies
+;; the port reader it needs to slurp source files and stdin.
+(define (read-forms port)   ; -> ordered list of all top-level forms in PORT
+  (let loop ([forms '()])
+    (let ([e (read port)])
+      (if (eof-object? e) (reverse forms) (loop (cons e forms))))))
+
+;; The self-hostable core reads source via the in-language `read-all-from-string`
+;; (provided by the prelude to a running program).  Under Chez the driver supplies
+;; it over a string port, so `core.ss`'s `read-forms-from-string` works here too.
+(define (read-all-from-string str) (read-forms (open-input-string str)))
 
 (define runtime-c "src/runtime/runtime.c")
 (define gc-inc "/opt/homebrew/include")

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# scheme-compile -- Chez-free source -> native executable (change:
+# self-hosting-completion, design D7).  The embedded compiler emits the program's
+# IR (`scheme-run --emit`); clang links it with the C runtime into a standalone
+# native binary.  No Chez, no lli.  This is the AOT sibling of the in-process
+# runner: the IR emitted here is byte-for-byte what `scheme-run` JITs, so the
+# executable behaves identically (dev->ship fidelity).
+#
+# Usage:  bin/scheme-compile prog.scm [-o out]     (default out = prog, sans .scm)
+set -eu
+cd "$(dirname "$0")/.."
+
+CC="${CC:-/opt/homebrew/opt/llvm@22/bin/clang}"
+GC_INC="${GC_INC:-/opt/homebrew/include}"
+GC_LIB="${GC_LIB:-/opt/homebrew/lib}"
+RUN="${RUN:-build/scheme-run}"
+
+src=""; out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) echo "scheme-compile: unknown option $1" >&2; exit 2 ;;
+    *)  src="$1"; shift ;;
+  esac
+done
+[ -n "$src" ] || { echo "usage: bin/scheme-compile prog.scm [-o out]" >&2; exit 1; }
+[ -n "$out" ] || out="${src%.scm}"
+
+# Ensure the runner exists (links committed IR with LLVM only; no Chez).
+[ -x "$RUN" ] || make scheme-run >&2
+
+tmpd="$(mktemp -d)"
+trap 'rm -rf "$tmpd"' EXIT
+ll="$tmpd/out.ll"   # clang infers IR from the .ll extension
+
+"$RUN" --emit < "$src" > "$ll"
+# The embedded compiler emits host-agnostic IR (no target header); clang supplies
+# the host triple, so silence the cosmetic -Woverride-module note.
+"$CC" -Wno-override-module -O2 -I"$GC_INC" -L"$GC_LIB" src/runtime/runtime.c "$ll" -lgc -o "$out"
+echo "wrote $out (Chez-free AOT)" >&2

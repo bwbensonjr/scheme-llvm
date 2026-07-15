@@ -10,6 +10,14 @@
 // value -- exactly the value the standalone AOT executable would print.
 //
 // Usage:  build/scheme-run < program.scm
+//         build/scheme-run --emit < program.scm > program.ll   (Chez-free AOT)
+//
+// With --emit (change: self-hosting-completion, design D7) the runner does NOT
+// JIT: it writes the embedded compiler's emitted IR to stdout and exits.  Piped
+// to clang with the runtime, this is a fully Chez-free source->native path
+// (see bin/scheme-compile), honoring standalone executables as a first-class
+// deliverable.  The IR is the SAME bytes the JIT path runs, so what you emit is
+// what you'd run in-process -- dev->ship fidelity.
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
@@ -47,7 +55,11 @@ extern "C" {
 
 typedef intptr_t (*entry_t)(void);
 
-int main() {
+int main(int argc, char **argv) {
+  bool emit = false;
+  for (int i = 1; i < argc; i++)
+    if (std::string(argv[i]) == "--emit") emit = true;
+
   GC_INIT();                                 // once, before the compiler allocates
 
   // 1) Compile the program in-process: the linked embedded compiler reads the
@@ -55,6 +67,16 @@ int main() {
   //    the bytes out immediately (the buffer is GC-managed).
   intptr_t ir_val = scheme_entry();
   std::string ir(rt_string_bytes(ir_val), (size_t)rt_string_len(ir_val));
+
+  // --emit (design D7): write the emitted IR to stdout and stop -- no JIT.  This
+  //    is the Chez-free AOT front half: `scheme-run --emit < prog.scm > prog.ll`,
+  //    then clang links prog.ll with the runtime into a native executable.  The
+  //    IR here is byte-for-byte what the JIT path below would run.
+  if (emit) {
+    std::fwrite(ir.data(), 1, ir.size(), stdout);
+    std::fflush(stdout);
+    return 0;
+  }
 
   // 2) Stand up the JIT and resolve rt_* / GC symbols from this process (the
   //    runtime is linked in; -rdynamic exports the symbols the IR references).

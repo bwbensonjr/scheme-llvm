@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# Aggregate test runner: invokes every harness in the project in one shot and
-# prints a roll-up.  This is the single entry point for "run the full set"; the
-# individual harnesses under demos/ and test/ remain runnable on their own.
-# Needs chez, system clang, libgc, and (for JIT/bitcode/REPL) LLVM 22 at
-# /opt/homebrew/opt/llvm@22.  Run from anywhere: ./run-all-tests.sh
+# DEFAULT test runner -- Chez-FREE (change: self-hosting-completion, design D5).
+#
+# This suite answers "do the SHIPPED binaries work?".  Every suite here exercises
+# a binary linked from the committed IR with LLVM only (no Chez): the demos run
+# through build/scheme-run (compile+run in one process), the interactive REPL runs
+# through build/repl-host.  No Chez process is invoked.
+#
+# The Chez-bound suites -- "does the source still build correctly and reproduce
+# the committed binaries?" (backend equivalence, self-emission/fixed-point,
+# IL-level unit tests, the anti-stale trust-check) -- live in ./run-dev-tests.sh,
+# which auto-skips when `chez` is absent.
+#
+# Needs LLVM 22 at /opt/homebrew/opt/llvm@22, system clang, and libgc.
+# Run from anywhere: ./run-all-tests.sh
 set -u
 cd "$(dirname "$0")"
 
-# name  command...  (name is the roll-up label; the rest is run verbatim)
 run_suite () {
   local name="$1"; shift
   echo
@@ -25,28 +33,23 @@ run_suite () {
 SUMMARY=()
 failed=0
 
-run_suite "demo values (AOT)"        demos/run-tests.sh
-run_suite "backend equivalence"      demos/run-backends.sh
-run_suite "expander units"           chez --libdirs src --script test/expander-tests.ss
-run_suite "read-all reader"          chez --libdirs src --script test/read-all-tests.ss
-run_suite "process-I/O primitives"   test/io-primitives-tests.sh
-run_suite "self-emission equivalence" bash -c 'make build/schemec >/dev/null 2>&1 && test/self-emit-equiv.sh'
-run_suite "self-hosting fixed point" test/self-host-fixpoint.sh
-run_suite "embedded runner vs AOT"   demos/run-embedded.sh
-run_suite "REPL front-end units"     chez --libdirs src --script test/repl-frontend.ss
-run_suite "REPL persistent host"     test/repl-host-tests.sh
-run_suite "REPL interactive (--repl)" test/repl-interactive-tests.sh
-run_suite "REPL vs batch equivalence" test/repl-equiv-tests.sh
-run_suite "REPL persistent-globals batch" test/repl-batch-tests.sh
+# Build the shipped binaries from committed IR (LLVM only; no Chez).
+if ! make all >/dev/null 2>&1; then
+  echo "fatal: 'make all' failed (could not link the shipped binaries)"; exit 1
+fi
+
+run_suite "demo values (scheme-run)"  env RUNNER=scheme-run demos/run-tests.sh
+run_suite "REPL persistent host"      test/repl-host-tests.sh
 
 echo
 echo "================================================================"
-echo "== summary"
+echo "== summary (Chez-free default suite)"
 echo "================================================================"
 printf '%s\n' "${SUMMARY[@]}"
 echo
 if [ "$failed" -eq 0 ]; then
   echo "all suites passed"
+  echo "(run ./run-dev-tests.sh for the Chez-gated backend/self-host/trust-check suites)"
 else
   echo "$failed suite(s) failed"
 fi

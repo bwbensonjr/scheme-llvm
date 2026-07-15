@@ -1,5 +1,5 @@
-;;; match-tests.ss -- unit tests for the `match` macro (src/match.sls).
-;;; Run from the repo root:  chez --libdirs src --script test/match-tests.ss
+;;; match-tests.ss -- unit tests for the `match` macro (src/match.scm).
+;;; Run from the repo root:  chez --script test/match-tests.ss
 ;;;
 ;;; Characterizes the matcher surface the compiler passes rely on: the `,x`
 ;;; (nanopass) convention -- bare symbols are literals matched with eq?, ,id
@@ -7,7 +7,8 @@
 ;;; (Ellipsis is intentionally out of scope here -- see change
 ;;; port-match-to-syntax-rules; it is a follow-up.)
 
-(import (chezscheme) (match))
+(import (chezscheme))
+(include "src/match.scm")           ; flat source (change: self-hosting-completion)
 
 (define pass 0)
 (define fail 0)
