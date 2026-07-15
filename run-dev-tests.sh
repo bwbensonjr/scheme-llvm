@@ -17,6 +17,7 @@
 # ./run-dev-tests.sh
 set -u
 cd "$(dirname "$0")"
+. tools/log.sh   # EMIT_LEVEL for quiet-aware banners (see docs/OUTPUT.md)
 
 if ! command -v chez >/dev/null 2>&1; then
   echo "chez not found -- skipping the Chez-gated developer/CI suite."
@@ -24,22 +25,30 @@ if ! command -v chez >/dev/null 2>&1; then
   exit 0
 fi
 
-run_suite () {
-  local name="$1"; shift
+# The per-suite banner is part of this runner's report (stdout), suppressed at quiet.
+banner () {
+  [ "${EMIT_LEVEL:-1}" -ge 1 ] || return 0
   echo
   echo "================================================================"
-  echo "== $name"
+  echo "== $1"
   echo "================================================================"
+}
+
+run_suite () {
+  local name="$1"; shift
+  local start=$SECONDS
+  banner "$name"
   if "$@"; then
-    SUMMARY+=("  [PASS] $name")
+    SUMMARY+=("  [PASS] $name ($((SECONDS - start))s)")
   else
-    SUMMARY+=("  [FAIL] $name")
+    SUMMARY+=("  [FAIL] $name ($((SECONDS - start))s)")
     failed=$((failed+1))
   fi
 }
 
 SUMMARY=()
 failed=0
+total_start=$SECONDS
 
 run_suite "demo values (AOT/chez)"      env RUNNER=aot demos/run-tests.sh
 run_suite "backend equivalence"         demos/run-backends.sh
@@ -61,6 +70,7 @@ echo "== summary (Chez-gated developer/CI suite)"
 echo "================================================================"
 printf '%s\n' "${SUMMARY[@]}"
 echo
+echo "${#SUMMARY[@]} suite(s), $failed failed, $((SECONDS - total_start))s total"
 if [ "$failed" -eq 0 ]; then
   echo "all suites passed"
 else

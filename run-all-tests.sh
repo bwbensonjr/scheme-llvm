@@ -15,23 +15,32 @@
 # Run from anywhere: ./run-all-tests.sh
 set -u
 cd "$(dirname "$0")"
+. tools/log.sh   # EMIT_LEVEL for quiet-aware banners (see docs/OUTPUT.md)
+
+# The per-suite banner is part of this runner's report (stdout), suppressed at quiet.
+banner () {
+  [ "${EMIT_LEVEL:-1}" -ge 1 ] || return 0
+  echo
+  echo "================================================================"
+  echo "== $1"
+  echo "================================================================"
+}
 
 run_suite () {
   local name="$1"; shift
-  echo
-  echo "================================================================"
-  echo "== $name"
-  echo "================================================================"
+  local start=$SECONDS
+  banner "$name"
   if "$@"; then
-    SUMMARY+=("  [PASS] $name")
+    SUMMARY+=("  [PASS] $name ($((SECONDS - start))s)")
   else
-    SUMMARY+=("  [FAIL] $name")
+    SUMMARY+=("  [FAIL] $name ($((SECONDS - start))s)")
     failed=$((failed+1))
   fi
 }
 
 SUMMARY=()
 failed=0
+total_start=$SECONDS
 
 # Build the shipped binaries from committed IR (LLVM only; no Chez).
 if ! make all >/dev/null 2>&1; then
@@ -47,6 +56,7 @@ echo "== summary (Chez-free default suite)"
 echo "================================================================"
 printf '%s\n' "${SUMMARY[@]}"
 echo
+echo "${#SUMMARY[@]} suite(s), $failed failed, $((SECONDS - total_start))s total"
 if [ "$failed" -eq 0 ]; then
   echo "all suites passed"
   echo "(run ./run-dev-tests.sh for the Chez-gated backend/self-host/trust-check suites)"

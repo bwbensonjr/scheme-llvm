@@ -77,6 +77,29 @@
   (pretty-print form (current-error-port))
   (newline (current-error-port)))
 
+;; --- output verbosity (see docs/OUTPUT.md) --------------------------------
+;; One control, three levels, read from EMIT_VERBOSITY (unset = default) and
+;; overridable by -q/-v.  All narration goes to stderr; stdout stays data-only
+;; (the --emit-ir filter never narrates).  0 = quiet, 1 = default, 2 = verbose.
+(define driver-verbosity
+  (let ([v (getenv "EMIT_VERBOSITY")])
+    (cond
+      [(not v) 1]
+      [(or (string=? v "quiet") (string=? v "q") (string=? v "0")) 0]
+      [(or (string=? v "verbose") (string=? v "v") (string=? v "2")) 2]
+      [else 1])))
+
+;; concise status line to stderr, suppressed at quiet.  fprintf-style.
+(define (note fmt . args)
+  (when (>= driver-verbosity 1)
+    (apply fprintf (current-error-port) fmt args)))
+
+;; verbose-only per-pass stage announcement (concise; no full form dump).  Shares
+;; core.ss's injected `dump` side-channel, so the pure core stays port-free.
+(define (announce-stage stage form)
+  (when (>= driver-verbosity 2)
+    (fprintf (current-error-port) "  stage ~a\n" stage)))
+
 ;; --- prelude (standard library prepended to every program) ---------------
 ;; The prelude is a *file*, so reading it is the driver's job; the pure core's
 ;; `with-prelude` merges the already-read forms (user-wins shadowing).
@@ -119,11 +142,11 @@
 ;; Driver: assemble forms, run forms->IR (in-process core, or schemec when
 ;; via?), prepend the host target header, and write the .ll.  The header (a
 ;; clang subprocess) is an effect and stays here so the core stays host-agnostic.
-(define (compile-file src ll dump? prelude? via?)
+(define (compile-file src ll dumpf prelude? via?)
   (let* ([forms (program-forms src prelude?)]
          [ir    (if via?
                     (forms->ir-via-schemec forms)
-                    (compile-forms forms (if dump? dump no-dump)))]
+                    (compile-forms forms dumpf))]
          [text  (string-append (host-target-header) ir)])
     (let ([out (open-output-file ll 'replace)]) (display text out) (close-port out))))
 
@@ -229,24 +252,28 @@
          [repl? (run-repl prelude?)]
          [emit-ir? (emit-ir-filter prelude?)]
          [else
-          (unless src (error 'compile "usage: compile.ss SRC.scm [-o OUT] [--dump] [--backend aot|jit|bitcode] [--no-prelude] [--via-schemec]\n   or: compile.ss --repl [--no-prelude]\n   or: compile.ss --emit-ir [--no-prelude] < SRC.scm  (IR text on stdout)\n   (--via-schemec / env SCHEMEC=<path>: run forms->IR through the compiled schemec)"))
-          (let* ([out (or out (strip-ext src))] [ll (string-append out ".ll")])
-            (compile-file src ll dump? prelude? via?)
+          (unless src (error 'compile "usage: compile.ss SRC.scm [-o OUT] [--dump] [-q|-v] [--backend aot|jit|bitcode] [--no-prelude] [--via-schemec]\n   or: compile.ss --repl [--no-prelude]\n   or: compile.ss --emit-ir [--no-prelude] < SRC.scm  (IR text on stdout)\n   (-q/-v or env EMIT_VERBOSITY=quiet|verbose control status output; see docs/OUTPUT.md)\n   (--via-schemec / env SCHEMEC=<path>: run forms->IR through the compiled schemec)"))
+          (let* ([out (or out (strip-ext src))] [ll (string-append out ".ll")]
+                 ;; --dump = full per-pass form trace; -v = concise stage names; else silent
+                 [dumpf (cond [dump? dump] [(>= driver-verbosity 2) announce-stage] [else no-dump])])
+            (compile-file src ll dumpf prelude? via?)
             (case (string->symbol backend)
               [(aot)
                (link ll out)
-               (fprintf (current-error-port) "wrote ~a and ~a~a\n" ll out (if via? " (via schemec)" ""))]
+               (note "link ~a -> ~a~a  [aot]\n" ll out (if via? "  (via schemec)" ""))]
               [(bitcode)
                (require-llvm-tools)
                (let ([bc (string-append out ".bc")])
                  (emit-bitcode ll bc)
                  (build-bitcode-exe bc out)
-                 (fprintf (current-error-port) "wrote ~a, ~a and ~a\n" ll bc out))]
+                 (note "link ~a -> ~a -> ~a  [bitcode]\n" ll bc out))]
               [(jit)
                (require-llvm-tools)
                (run-jit ll out)]
               [else (error 'compile "unknown backend (want aot|jit|bitcode)" backend)]))])]
       [(string=? (car args) "-o") (loop (cddr args) src (cadr args) dump? backend prelude? repl? emit-ir? via?)]
+      [(string=? (car args) "-q") (set! driver-verbosity 0) (loop (cdr args) src out dump? backend prelude? repl? emit-ir? via?)]
+      [(string=? (car args) "-v") (set! driver-verbosity 2) (loop (cdr args) src out dump? backend prelude? repl? emit-ir? via?)]
       [(string=? (car args) "--dump") (loop (cdr args) src out #t backend prelude? repl? emit-ir? via?)]
       [(string=? (car args) "--backend") (loop (cddr args) src out dump? (cadr args) prelude? repl? emit-ir? via?)]
       [(string=? (car args) "--no-prelude") (loop (cdr args) src out dump? backend #f repl? emit-ir? via?)]

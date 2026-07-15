@@ -9,6 +9,7 @@
 # Usage:  bin/scheme-compile prog.scm [-o out]     (default out = prog, sans .scm)
 set -eu
 cd "$(dirname "$0")/.."
+. tools/log.sh   # say/vsay/bytes + EMIT_VERBOSITY (see docs/OUTPUT.md)
 
 CC="${CC:-/opt/homebrew/opt/llvm@22/bin/clang}"
 GC_INC="${GC_INC:-/opt/homebrew/include}"
@@ -34,7 +35,9 @@ trap 'rm -rf "$tmpd"' EXIT
 ll="$tmpd/out.ll"   # clang infers IR from the .ll extension
 
 "$RUN" --emit < "$src" > "$ll"
+say "emit $src -> $ll  [$(bytes "$ll") bytes IR]"
 # The embedded compiler emits host-agnostic IR (no target header); clang supplies
 # the host triple, so silence the cosmetic -Woverride-module note.
 "$CC" -Wno-override-module -O2 -I"$GC_INC" -L"$GC_LIB" src/runtime/runtime.c "$ll" -lgc -o "$out"
-echo "wrote $out (Chez-free AOT)" >&2
+say "link $ll -> $out  [$(bytes "$out") bytes exe]"
+say "wrote $out (Chez-free AOT)"

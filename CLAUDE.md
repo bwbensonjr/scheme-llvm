@@ -27,3 +27,9 @@
   (`define-library`, `import`, `export`).
 - This project uses OpenSpec for tracking designs and tasks (see
   `openspec/specs` and `openspec/changes`).
+- **Tools narrate what they do.** Every tool, script, and pipeline stage
+  announces its action, names its inputs and outputs, and reports the
+  relevant metrics (sizes, durations, counts) — concise by default,
+  controllable via `EMIT_VERBOSITY`, with narration on stderr and data on
+  stdout. Follow the convention in `docs/OUTPUT.md` when adding or editing a
+  tool.

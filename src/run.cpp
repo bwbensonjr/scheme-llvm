@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
 
   auto jitOr = LLJITBuilder().create();
   if (!jitOr) {
-    std::cerr << "fatal: failed to create LLJIT: " << toString(jitOr.takeError()) << "\n";
+    std::cerr << "scheme-run: fatal: failed to create LLJIT: " << toString(jitOr.takeError()) << "\n";
     return 1;
   }
   std::unique_ptr<LLJIT> JIT = std::move(*jitOr);
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
   auto gen = DynamicLibrarySearchGenerator::GetForCurrentProcess(
       JIT->getDataLayout().getGlobalPrefix());
   if (!gen) {
-    std::cerr << "fatal: generator error: " << toString(gen.takeError()) << "\n";
+    std::cerr << "scheme-run: fatal: generator error: " << toString(gen.takeError()) << "\n";
     return 1;
   }
   JIT->getMainJITDylib().addGenerator(std::move(*gen));
@@ -111,19 +111,19 @@ int main(int argc, char **argv) {
     std::string msg;
     raw_string_ostream os(msg);
     err.print("<program>", os);
-    std::cerr << "parse error: " << os.str() << "\n";
+    std::cerr << "scheme-run: parse error: " << os.str() << "\n";
     return 1;
   }
   mod->setDataLayout(JIT->getDataLayout());
 
   if (Error e = JIT->addIRModule(ThreadSafeModule(std::move(mod), std::move(ctx)))) {
-    std::cerr << "add error: " << toString(std::move(e)) << "\n";
+    std::cerr << "scheme-run: add error: " << toString(std::move(e)) << "\n";
     return 1;
   }
 
   Expected<ExecutorAddr> sym = JIT->lookup("scheme_entry");
   if (!sym) {
-    std::cerr << "lookup error: " << toString(sym.takeError()) << "\n";
+    std::cerr << "scheme-run: lookup error: " << toString(sym.takeError()) << "\n";
     return 1;
   }
   entry_t fn = sym->toPtr<entry_t>();
@@ -139,7 +139,7 @@ int main(int argc, char **argv) {
     std::fflush(stdout);
   } else {
     rt_guard_reset();   // a trap may have bypassed rt_run_guarded's frame pop
-    std::cerr << "trap: " << rt_trap_msg << "\n";
+    std::cerr << "scheme-run: trap: " << rt_trap_msg << "\n";
     rt_trap = nullptr;
     return 1;
   }

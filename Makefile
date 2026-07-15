@@ -62,21 +62,21 @@ schemec:    $(SCHEMEC)
 $(HOST): build/host.o build/runtime-host.o $(EMBED_REPL_LL) Makefile
 	$(CXX) build/host.o build/runtime-host.o $(EMBED_REPL_LL) \
 	  -rdynamic $(LDFLAGS) -L$(GC_LIB) -lgc -o $@
-	@echo "built $@"
+	@. tools/log.sh; say "link $(EMBED_REPL_LL) -> $@  [$$(bytes $@) bytes]"
 
 # In-process compile-and-run runner: A-links the embedded batch compiler
 # (embed.ll).  Supports `--emit` (write IR to stdout; Chez-free AOT, design D7).
 $(RUN): build/run.o build/runtime-host.o $(EMBED_LL) Makefile
 	$(CXX) build/run.o build/runtime-host.o $(EMBED_LL) \
 	  -rdynamic $(LDFLAGS) -L$(GC_LIB) -lgc -o $@
-	@echo "built $@"
+	@. tools/log.sh; say "link $(EMBED_LL) -> $@  [$$(bytes $@) bytes]"
 
 # Batch text->IR filter compiler: links the committed schemec IR with the
 # runtime's RT_FILTER_MAIN (so the program's output is exactly the emitted IR).
 $(SCHEMEC): $(SCHEMEC_LL) src/runtime/runtime.c Makefile | build
 	$(CC) -O2 -DRT_FILTER_MAIN -I$(GC_INC) -L$(GC_LIB) \
 	  src/runtime/runtime.c $(SCHEMEC_LL) -lgc -o $@
-	@echo "built $@"
+	@. tools/log.sh; say "link $(SCHEMEC_LL) -> $@  [$$(bytes $@) bytes]"
 
 # --- objects ---------------------------------------------------------------
 # Runtime compiled as C without its standalone main (the hosts supply one).
@@ -100,9 +100,11 @@ build/run.o: src/run.cpp Makefile | build
 # every binary from the regenerated IR.
 .PHONY: regen
 regen: $(SCHEMEC)
-	CC="$(CC)" GC_INC="$(GC_INC)" GC_LIB="$(GC_LIB)" tools/regen.sh
-	$(MAKE) all schemec
-	@echo "regen complete -- committed IR + binaries rebuilt with no Chez"
+	@. tools/log.sh; say "regen bootstrap/*.ll + binaries (Chez-free)"
+	@start=$$(date +%s); \
+	  CC="$(CC)" GC_INC="$(GC_INC)" GC_LIB="$(GC_LIB)" tools/regen.sh && \
+	  $(MAKE) all schemec && \
+	  { . tools/log.sh; say "regen complete -- committed IR + binaries rebuilt, no Chez  [$$(($$(date +%s) - start))s]"; }
 
 # build/ is a real directory (order-only prerequisite), not a phony target.
 build:
