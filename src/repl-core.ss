@@ -2,7 +2,7 @@
 ;;;
 ;;; Change: repl-embedded-incremental.  This is the incremental, stateful half of
 ;;; the compiler that used to live in the Chez driver (`run-repl`, compile.ss).
-;;; Ported here it compiles under scheme-llvm itself, so the interactive `--repl`
+;;; Ported here it compiles under Emit itself, so the interactive `--repl`
 ;;; runs its compilation in-process (no Chez, no per-form subprocess) -- the same
 ;;; embedding Path A that `scheme-run` uses for batch.
 ;;;

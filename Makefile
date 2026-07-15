@@ -1,4 +1,4 @@
-# Makefile -- Chez-free build for scheme-llvm (change: self-hosting-completion).
+# Makefile -- Chez-free build for Emit (change: self-hosting-completion).
 #
 # THE MODEL: a developer needs only LLVM 22 + libgc.  The committed compiler IR
 # under bootstrap/ (schemec.ll, embed.ll, embed-repl.ll) is the FAVORED,

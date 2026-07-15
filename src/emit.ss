@@ -248,7 +248,7 @@
 (define (ev-if a b c env cp tc?)
   ;; let* (not let): emit the test, then allocate labels/cmp, in a fixed order --
   ;; a parallel `let` would evaluate these side-effecting inits in host order
-  ;; (Chez right-to-left vs scheme-llvm left-to-right), diverging temp/label
+  ;; (Chez right-to-left vs Emit left-to-right), diverging temp/label
   ;; numbering (fix-emit-eval-order, ev-if/et-if sites).
   (let* ([tv (ev a env cp tc?)]
          [tl (fresh-bb "then")] [el (fresh-bb "else")] [ml (fresh-bb "merge")]

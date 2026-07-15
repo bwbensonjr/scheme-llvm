@@ -1,8 +1,8 @@
-# Scheme LLVM
+# Emit
 
 A Scheme to LLVM compiler
 
-A **self-hosting Scheme→LLVM compiler**: a hand-rolled frontend
+Emit is a **self-hosting Scheme→LLVM compiler**: a hand-rolled frontend
 pipeline that emits textual LLVM IR, a small C runtime under Boehm GC,
 and **three backends** (AOT, JIT, bitcode) that are checked to agree
 byte-for-byte. There is an **interactive REPL** on a persistent LLVM

@@ -200,7 +200,7 @@ int main(int argc, char **argv) {
     rt_trap = nullptr;
   }
 
-  std::cerr << "scheme-llvm REPL (embedded compiler, ORC/LLJIT).  ^D to exit.\n";
+  std::cerr << "Emit REPL (embedded compiler, ORC/LLJIT).  ^D to exit.\n";
 
   // Accumulate stdin and drive the compiler.  After each line, ask the compiler
   // (form-complete?) whether the buffer starts with a complete form; when it does,

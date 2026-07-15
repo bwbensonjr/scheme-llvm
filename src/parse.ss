@@ -28,7 +28,7 @@
 ;; a genuine procedure; a call in operator position is still recognized as a
 ;; primcall (the prim check is head-only), so direct calls are unaffected.  The
 ;; fix lives here, not in the prelude: a prelude `(define (car x) (car x))` would
-;; be a primcall under scheme-llvm but infinite self-recursion under the bootstrap
+;; be a primcall under Emit but infinite self-recursion under the bootstrap
 ;; host, which loads the prelude directly.
 (define *prim-eta-arity* '((car . 1) (cdr . 1) (cons . 2)))
 

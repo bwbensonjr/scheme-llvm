@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-hosting fixed-point (triple) test + independent-host trust-check.
 #
-# Proves scheme-llvm is self-hosting: the compiler, compiled by itself, compiles
+# Proves Emit is self-hosting: the compiler, compiled by itself, compiles
 # its own source into a BYTE-IDENTICAL compiler.  Let T = the assembled compiler
 # source (prelude ++ flat core ++ schemec entry).  We build three stages:
 #

@@ -3,7 +3,7 @@
 ## Purpose
 
 Defines the path toward compiling the compiler with itself: assembling the compiler core
-into a single program expressed in the subset scheme-llvm accepts, and maintaining a complete
+into a single program expressed in the subset Emit accepts, and maintaining a complete
 inventory of the remaining constructs the language does not yet support, so the stage-1
 self-hosting build can proceed without discovering gaps ad hoc.
 
