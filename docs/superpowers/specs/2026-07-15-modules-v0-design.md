@@ -218,7 +218,9 @@ default under `build/` so compiled units stay out of the source tree.
 
 - **Stage 0 — Resolution scaffolding, no artifacts.** Typed scope + module-qualified
   mangling for library-owned names and lifted code labels. Acceptance: no-library programs
-  emit byte-identical IR.
+  emit byte-identical IR. **Tracked as its own OpenSpec change**
+  (`openspec/changes/module-resolution-scaffold`), landed and verified before the
+  module-artifact stages — it is self-contained and byte-identity-testable.
 - **Stage 1 — Vertical slice (both-doors milestone).** One trivial `(mylib)` exporting one
   procedure → `mylib.ll` + `mylib.exports`; a program `(import (mylib))` that links into a
   working exe *and* loads into the REPL. Minimal two-entry manifest. v0's core gate.
@@ -261,5 +263,6 @@ re-homed prelude) and each stage is independently revertible.
   or as a Scheme data structure held in the embedded compiler's state.
 - Manifest search/default-artifact-dir conventions once more than a couple of libraries
   exist (kept trivial for the Stage 1 slice).
-- Whether Stage 0's mangling change is best landed as its own OpenSpec change before the
-  module artifacts (likely yes — it is self-contained and byte-identity-testable).
+
+**Resolved:** Stage 0 is landed as its own OpenSpec change
+(`module-resolution-scaffold`) before the module-artifact stages.
