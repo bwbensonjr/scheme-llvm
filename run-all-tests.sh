@@ -48,6 +48,7 @@ if ! make all >/dev/null 2>&1; then
 fi
 
 run_suite "demo values (scheme-run)"  env RUNNER=scheme-run demos/run-tests.sh
+run_suite "module-scaffold byte-identity" test/module-scaffold-baseline.sh check
 run_suite "REPL persistent host"      test/repl-host-tests.sh
 
 echo

@@ -216,12 +216,42 @@
     (vector-set! env 0 (cons (cons name sym) (vector-ref env 0)))
     sym))
 
+;; ---- typed binding resolution (change: module-resolution-scaffold) ----------
+;; Free-identifier resolution classifies each resolved binding by KIND rather
+;; than returning a bare target.  A binding is (binding <kind> <symbol>):
+;;   local     -- the current unit's own top-level definition; emitted as a
+;;                (global-ref sym) into that unit's slot (today's flat case).
+;;   imported  -- another unit's export (Stage 1); also emitted as a
+;;                (global-ref sym), which is referenced-but-not-defined in this
+;;                unit and so flows through the existing REPL external-global hook
+;;                (emit.ss `emit-repl-module`) as `external global i64`.  NOT
+;;                produced by the resolver in this change -- structured and
+;;                consumable, ready for Stage 1 to populate from imports.
+;;   primitive -- a built-in operator/keyword.  In the M1 subset a primitive used
+;;                as a value is already eta-expanded in `parse-expr`, so a bare
+;;                primitive never reaches resolution as a free variable; the kind
+;;                is modeled for completeness (and Stage 1's import merge).
+(define (make-binding kind sym) (list 'binding kind sym))
+(define (binding-kind b) (cadr b))
+(define (binding-sym b) (caddr b))
+
+;; Classify a free identifier against the unit's scope, resolving the unit's own
+;; top-level definitions (the REPL env) first, then imported bindings (none in
+;; this change), then primitives; #f if unbound.  With no imports the results for
+;; any library-free program are identical to the prior flat name->sym lookup.
+(define (scope-resolve env name)
+  (let ([s (repl-env-lookup env name)])
+    (cond
+      [s           (make-binding 'local s)]
+      [(prim? name) (make-binding 'primitive name)]
+      [else #f])))
+
 ;; Post-rename resolution: a bare symbol that is not bound by an enclosing
-;; lambda/let/letrec is a top-level reference.  Map each to a (global-ref sym)
-;; via the REPL env, or raise an unbound-variable error -- a form may reference
-;; globals from earlier forms but never a later (undefined) one, which is
-;; exactly normal REPL scoping.  Resolution tracks the bound locals as it
-;; descends so renamed params (e.g. n.0) are left alone.
+;; lambda/let/letrec is a top-level reference.  Map each through the typed scope
+;; to a (global-ref sym) via the REPL env, or raise an unbound-variable error --
+;; a form may reference globals from earlier forms but never a later (undefined)
+;; one, which is exactly normal REPL scoping.  Resolution tracks the bound locals
+;; as it descends so renamed params (e.g. n.0) are left alone.
 (define (resolve-globals e env)
   (define (R e bound)
     (define (Rb e) (R e bound))
@@ -231,10 +261,17 @@
       [(global-set! ,s ,rhs) `(global-set! ,s ,(Rb rhs))]
       [,x (guard (symbol? x))
           (if (memq x bound)
-              x                                    ; a bound local
-              (let ([s (repl-env-lookup env x)])
-                (or (and s `(global-ref ,s))
-                    (error 'repl "unbound variable" x))))]
+              x                                    ; a lexical local
+              (let ([b (scope-resolve env x)])
+                (cond
+                  [(not b) (error 'repl "unbound variable" x)]
+                  ;; local and imported both target a global slot; imported's slot
+                  ;; is defined by another unit and resolves via external global.
+                  [(eq? (binding-kind b) 'local)    `(global-ref ,(binding-sym b))]
+                  [(eq? (binding-kind b) 'imported) `(global-ref ,(binding-sym b))]
+                  ;; primitive: a reserved keyword, not a variable (unreachable
+                  ;; post-eta) -- leave the symbol, as the flat model effectively did.
+                  [else x])))]
       [(if ,a ,b ,c) `(if ,(Rb a) ,(Rb b) ,(Rb c))]
       [(seq ,a ,b) `(seq ,(Rb a) ,(Rb b))]
       [(set! ,x ,rhs) `(set! ,x ,(Rb rhs))]        ; x is a renamed local

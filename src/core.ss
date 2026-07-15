@@ -63,7 +63,7 @@
            [a     (recognize-let core)]
            [b     (convert-assignments a)]
            [c     (convert-closures b)]
-           [d     (lower-program c)])
+           [d     (lower-program c program-unit)])
       (dump "collect-toplevel" top) (dump "expand" expd)
       (dump "parse+rename" core) (dump "recognize-let" a)
       (dump "convert-assignments" b) (dump "convert-closures" c) (dump "lower" d)
@@ -90,4 +90,4 @@
 ;; forms through this incrementally (against a persistent env); batch compilation
 ;; runs the same passes over a whole program in `compile-forms`.
 (define (repl-lcode il)
-  (lower-program (convert-closures (convert-assignments (recognize-let il)))))
+  (lower-program (convert-closures (convert-assignments (recognize-let il))) program-unit))

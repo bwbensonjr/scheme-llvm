@@ -19,8 +19,22 @@
 (define *code-defs* '())
 (define (add-code! def) (set! *code-defs* (cons def *code-defs*)))
 
-(define (lower-program e)
+;; The current compilation unit's library name (change: module-resolution-scaffold),
+;; threaded in by lower-program as module state alongside `*code-defs*`.  Lifted
+;; code-block labels are named through it via `mangle`; the program unit is the
+;; empty prefix, so its labels stay "code_N" (byte-identity).
+(define *unit* program-unit)
+
+;; a fresh, unit-qualified code-block label: "code_N" for the program unit,
+;; "L:code_N" for a library unit.
+(define (fresh-code-label) (mangle *unit* (fresh-label "code")))
+
+;; `unit` is the compilation unit's library name (a list of symbol parts); the
+;; program unit is `program-unit` (empty prefix).  It is optional so the pass
+;; tests that call (lower-program e) still get the program unit.
+(define (lower-program e . opt)
   (set! *code-defs* '())
+  (set! *unit* (if (null? opt) program-unit (car opt)))
   (let ([entry (lower e '() '())])          ; top level: no locals, no free vars
     `(program ,(reverse *code-defs*) ,entry)))
 
@@ -45,7 +59,7 @@
        `(let ,(map list xs es) ,(lower body (append xs locals) fmap)))]
     [(lambda ,params ,body)                              ; standalone -> make-closure
      (let* ([fvs (free-vars e)]
-            [label (fresh-label "code")])
+            [label (fresh-code-label)])
        (hoist-code! label params body fvs)
        `(make-closure ,label ,(map (lambda (v) (lower v locals fmap)) fvs)))]
     [(closures ,cbinds ,body)                            ; letrec group -> closure-block
@@ -56,7 +70,7 @@
                     (match (caddr b)
                       [(lambda ,params ,lbody)
                        (let ([fvs (free-vars (caddr b))]
-                             [label (fresh-label "code")])
+                             [label (fresh-code-label)])
                          (hoist-code! label params lbody fvs)
                          ;; captures lowered in the group scope (siblings visible)
                          (list (car b) label

@@ -54,6 +54,7 @@ run_suite "demo values (AOT/chez)"      env RUNNER=aot demos/run-tests.sh
 run_suite "backend equivalence"         demos/run-backends.sh
 run_suite "expander units"              chez --libdirs src --script test/expander-tests.ss
 run_suite "read-all reader"             chez --libdirs src --script test/read-all-tests.ss
+run_suite "mangle (symbol naming)"      chez --libdirs src --script test/mangle-tests.ss
 run_suite "process-I/O primitives"      test/io-primitives-tests.sh
 run_suite "self-emission equivalence"   bash -c 'make build/schemec >/dev/null 2>&1 && test/self-emit-equiv.sh'
 run_suite "self-hosting fixed point"    test/self-host-fixpoint.sh

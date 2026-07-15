@@ -584,10 +584,18 @@
 ;; constant instead of the per-program max.
 (define repl-arity 8)
 
+;; The compilation unit whose top-level globals are being emitted (change:
+;; module-resolution-scaffold).  The program / REPL unit is the empty prefix, so
+;; global names are unchanged; Stage 1 sets it per library so a library's globals
+;; carry its "L:" prefix.  Mirrors lower.ss's `*unit*` for code-block labels.
+(define *emit-unit* program-unit)
+
 ;; LLVM global operand for a (generation-mangled, possibly non-identifier)
-;; top-level symbol.  Names are quoted so characters like ? ! - > are legal.
+;; top-level symbol, named through `mangle` against the current emit unit (the
+;; program/REPL unit is the empty prefix, so the operand is byte-identical).
+;; Names are quoted so characters like ? ! - > are legal.
 (define (global-operand s)
-  (string-append "@\"" (symbol->string s) "\""))
+  (string-append "@\"" (mangle *emit-unit* s) "\""))
 
 ;; Scan an L-code program for the persistent globals it defines (global-set!
 ;; targets) and references (global-ref / global-set! targets).
@@ -687,6 +695,13 @@
 ;; forms) are declared `external` and resolve in the JIT to the module that
 ;; defined them.  The single entry thunk @__repl_N returns the form's value.
 ;; Returns (list module-text entry-name defined-globals).
+;;
+;; This referenced-but-not-defined -> `external global i64` path is exactly the
+;; hook an `imported` binding reuses (change: module-resolution-scaffold): the
+;; resolver names an imported reference as a (global-ref sym) into another unit's
+;; slot, which is referenced-not-defined here and so lands in `external` below.
+;; No imported bindings are produced in this change, so this stays unexercised
+;; until Stage 1 populates imports.
 (define (emit-repl-module prog n)
   (reset-emit!) (reset-symbols!)
   (set! *arity* repl-arity)
