@@ -158,6 +158,8 @@ library-structured source are frozen under `historical/genesis/`.
   notes (`explorations/`).
 - `LLVM.md`, `docs/PIPELINE.md` — value representation / calling convention, and the pass
   ladder.
+- `docs/MODULES.md` — using the module system: writing a `define-library`, `import`/`export`, the
+  manifest (`emit-libs.scm`), building/running an importing program on each door, and `(scheme base)`.
 - `docs/OUTPUT.md` — the tool-output convention: message format, stderr/stdout discipline,
   and the `EMIT_VERBOSITY` control that every build/compile/regen/test tool honors.
 - `tools/log.sh` — the shared `say`/`vsay`/`bytes` helpers that implement that convention.
