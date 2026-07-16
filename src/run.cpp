@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <csetjmp>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <memory>
@@ -57,8 +58,17 @@ typedef intptr_t (*entry_t)(void);
 
 int main(int argc, char **argv) {
   bool emit = false;
-  for (int i = 1; i < argc; i++)
-    if (std::string(argv[i]) == "--emit") emit = true;
+  bool no_prelude = false;
+  for (int i = 1; i < argc; i++) {
+    std::string a(argv[i]);
+    if (a == "--emit") emit = true;
+    else if (a == "--no-prelude") no_prelude = true;
+  }
+
+  // Forward --no-prelude to the embedded entry (change: embedded-runner-rehome):
+  // it reads EMIT_NO_PRELUDE via the %no-prelude? primitive to decide whether to
+  // auto-import (scheme base).  Must be set before scheme_entry() runs below.
+  if (no_prelude) setenv("EMIT_NO_PRELUDE", "1", 1);
 
   GC_INIT();                                 // once, before the compiler allocates
 
@@ -103,22 +113,42 @@ int main(int argc, char **argv) {
   //    own `scheme_entry`; it is served from the JITDylib, distinct from the
   //    linked compiler's entry (the process generator is only a fallback for the
   //    module's undefined references -- the rt_* runtime functions).
-  auto ctx = std::make_unique<LLVMContext>();
-  SMDiagnostic err;
-  auto buf = MemoryBuffer::getMemBuffer(ir, "<program>");
-  std::unique_ptr<Module> mod = parseIR(buf->getMemBufferRef(), err, *ctx);
-  if (!mod) {
-    std::string msg;
-    raw_string_ostream os(msg);
-    err.print("<program>", os);
-    std::cerr << "scheme-run: parse error: " << os.str() << "\n";
-    return 1;
-  }
-  mod->setDataLayout(JIT->getDataLayout());
+  //
+  //    When the prelude is re-homed (change: embedded-runner-rehome) the embedded
+  //    entry returns TWO modules -- the (scheme base) library and the program --
+  //    joined by a boundary marker, because they cannot share one LLVM module
+  //    (each emits a fixed @__apply0 and reset string globals that would collide).
+  //    Add each as its own module to the same JITDylib; the program's `external`
+  //    references to scheme.base:* resolve against the library module.  With
+  //    --no-prelude (or a lone define-library) there is no marker: one module.
+  auto addModule = [&](const std::string &text, const char *name) -> bool {
+    auto ctx = std::make_unique<LLVMContext>();
+    SMDiagnostic err;
+    auto buf = MemoryBuffer::getMemBuffer(text, name);
+    std::unique_ptr<Module> mod = parseIR(buf->getMemBufferRef(), err, *ctx);
+    if (!mod) {
+      std::string msg;
+      raw_string_ostream os(msg);
+      err.print(name, os);
+      std::cerr << "scheme-run: parse error: " << os.str() << "\n";
+      return false;
+    }
+    mod->setDataLayout(JIT->getDataLayout());
+    if (Error e = JIT->addIRModule(ThreadSafeModule(std::move(mod), std::move(ctx)))) {
+      std::cerr << "scheme-run: add error: " << toString(std::move(e)) << "\n";
+      return false;
+    }
+    return true;
+  };
 
-  if (Error e = JIT->addIRModule(ThreadSafeModule(std::move(mod), std::move(ctx)))) {
-    std::cerr << "scheme-run: add error: " << toString(std::move(e)) << "\n";
-    return 1;
+  const std::string marker = "; ==EMIT-UNIT-BOUNDARY==\n";
+  size_t bpos = ir.find(marker);
+  if (bpos == std::string::npos) {
+    if (!addModule(ir, "<program>")) return 1;
+  } else {
+    // (scheme base) module first, then the program that imports it.
+    if (!addModule(ir.substr(0, bpos), "<scheme.base>")) return 1;
+    if (!addModule(ir.substr(bpos + marker.size()), "<program>")) return 1;
   }
 
   Expected<ExecutorAddr> sym = JIT->lookup("scheme_entry");

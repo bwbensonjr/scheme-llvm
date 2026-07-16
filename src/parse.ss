@@ -15,7 +15,7 @@
                   string-set! string-copy
                   make-vector vector-ref vector-set! vector-length vector?
                   symbol? string? char? boolean? integer? exact?
-                  read-all-stdin display
+                  read-all-stdin display %no-prelude?
                   repl-mode repl-input repl-state-ref repl-state-set!
                   %error-abort %raise %run-guarded
                   %error-object? %error-object-message %error-object-irritants))

@@ -108,6 +108,66 @@
          (with-prelude (read-forms-from-string prelude-str) forms)
          no-dump)])))
 
+;; --- prelude re-homed as (scheme base) for the embedded runner (change:
+;; embedded-runner-rehome) ---------------------------------------------------
+;; The Chez-free runner (scheme-run / scheme-compile) re-homes the prelude the way
+;; the Chez driver does, but with no manifest and no filesystem: it builds the
+;; (scheme base) library from the BAKED-IN prelude source, compiles it to a unit,
+;; and compiles the user program auto-importing it.  A program and a library each
+;; emit a fixed @__apply0 and string globals from a reset counter, which would
+;; collide in a single LLVM module, so the two modules are returned SEPARATELY,
+;; joined by a boundary marker the host splits on -- mirroring the driver's
+;; separate-unit linking, so the emitted program module is byte-identical to the
+;; driver's prog.ll.
+
+;; A line that cannot occur in emitted core IR (the core emits no `;` comments),
+;; so the host splits the two modules unambiguously.
+(define *emit-unit-boundary* "; ==EMIT-UNIT-BOUNDARY==\n")
+
+;; Build the (scheme base) define-library form from the prelude's forms: every
+;; top-level (define NAME ...) is exported; ALL prelude forms (procedures + the
+;; derived-form macros) stay in the body, so the library self-compiles and its
+;; macros are lifted into the unit's compile-time macro-env.  Mirrors
+;; tools/gen-scheme-base.ss exactly, but in the portable core -- the baked-in
+;; prelude source is the single source of truth, so no lib/scheme/base.sld read.
+;; Built with cons/list (not quasiquote) to stay in the plainest self-hostable
+;; subset.
+(define (scheme-base-library-form prelude-forms)
+  (cons 'define-library
+        (cons '(scheme base)
+              (cons (cons 'export (filter (lambda (x) x) (map define-name prelude-forms)))
+                    (list (cons 'begin prelude-forms))))))
+
+;; the prelude's derived-form macros (its compile-time half), merged into a user
+;; program's macro-env at expand time -- the same set the Chez driver merges.
+(define (prelude-macro-forms prelude-forms)
+  (filter (lambda (f) (and (pair? f) (eq? (car f) 'define-syntax))) prelude-forms))
+
+;; source text + prelude text -> two IR modules (no header) joined by the boundary
+;; marker: the (scheme base) library IR, the marker, then the program IR (which
+;; references scheme.base:* as external globals).  The re-homed sibling of
+;; compile-source-with-prelude: instead of prepending the prelude's definitions it
+;; compiles (scheme base) from the baked-in prelude source and compiles the program
+;; importing it via compile-program-with-imports -- the SAME core path the Chez
+;; driver drives, so the program module is byte-identical to the driver's.  A lone
+;; define-library is still compiled as one unit (a library does not auto-import the
+;; prelude), returning a single module with no marker.
+(define (compile-source-rehomed prelude-str user-str)
+  (let ([user-forms (read-forms-from-string user-str)])
+    (cond
+      [(single-define-library user-forms) => (lambda (lib) (compile-library-form lib no-dump))]
+      [else
+       (let* ([prelude-forms (read-forms-from-string prelude-str)]
+              [dl         (parse-define-library (scheme-base-library-form prelude-forms))]
+              [base-res   (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl) '() no-dump)]
+              [base-ir    (car base-res)]
+              [base-table (cadr base-res)]
+              [prog-ir    (compile-program-with-imports
+                            (prelude-macro-forms prelude-forms)
+                            user-forms (list base-table)
+                            (list '(scheme base)) no-dump)])
+         (string-append base-ir *emit-unit-boundary* prog-ir))])))
+
 ;; shared back half of the pipeline for one core-IL expression.  The REPL feeds
 ;; forms through this incrementally (against a persistent env); batch compilation
 ;; runs the same passes over a whole program in `compile-forms`.

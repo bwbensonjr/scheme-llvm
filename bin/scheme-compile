@@ -6,7 +6,14 @@
 # runner: the IR emitted here is byte-for-byte what `scheme-run` JITs, so the
 # executable behaves identically (dev->ship fidelity).
 #
-# Usage:  bin/scheme-compile prog.scm [-o out]     (default out = prog, sans .scm)
+# With the prelude re-homed as (scheme base) (change: embedded-runner-rehome) the
+# emitted IR is TWO modules -- the (scheme base) library and the program -- joined
+# by a boundary marker; this splits them into separate .ll units and clang links
+# all of them with the runtime (mirroring the Chez driver's separate-unit link).
+# --no-prelude emits a single self-contained program module (no marker).
+#
+# Usage:  bin/scheme-compile prog.scm [-o out] [--no-prelude]
+#           (default out = prog, sans .scm)
 set -eu
 cd "$(dirname "$0")/.."
 . tools/log.sh   # say/vsay/bytes + EMIT_VERBOSITY (see docs/OUTPUT.md)
@@ -16,15 +23,16 @@ GC_INC="${GC_INC:-/opt/homebrew/include}"
 GC_LIB="${GC_LIB:-/opt/homebrew/lib}"
 RUN="${RUN:-build/scheme-run}"
 
-src=""; out=""
+src=""; out=""; noprelude=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
+    --no-prelude) noprelude="--no-prelude"; shift ;;
     -*) echo "scheme-compile: unknown option $1" >&2; exit 2 ;;
     *)  src="$1"; shift ;;
   esac
 done
-[ -n "$src" ] || { echo "usage: bin/scheme-compile prog.scm [-o out]" >&2; exit 1; }
+[ -n "$src" ] || { echo "usage: bin/scheme-compile prog.scm [-o out] [--no-prelude]" >&2; exit 1; }
 [ -n "$out" ] || out="${src%.scm}"
 
 # Ensure the runner exists (links committed IR with LLVM only; no Chez).
@@ -32,12 +40,27 @@ done
 
 tmpd="$(mktemp -d)"
 trap 'rm -rf "$tmpd"' EXIT
-ll="$tmpd/out.ll"   # clang infers IR from the .ll extension
+combined="$tmpd/combined.ll"
 
-"$RUN" --emit < "$src" > "$ll"
-say "emit $src -> $ll  [$(bytes "$ll") bytes IR]"
+# shellcheck disable=SC2086
+"$RUN" --emit $noprelude < "$src" > "$combined"
+say "emit $src -> $combined  [$(bytes "$combined") bytes IR]"
+
+# Split the combined IR on the boundary marker into unit.N.ll (one file when
+# there is no marker: --no-prelude or a lone define-library).  clang infers IR
+# from the .ll extension.
+awk -v dir="$tmpd" '
+  BEGIN { n = 0; f = dir "/unit.0.ll" }
+  /^; ==EMIT-UNIT-BOUNDARY==$/ { n++; f = dir "/unit." n ".ll"; next }
+  { print > f }
+' "$combined"
+
+units=$(ls "$tmpd"/unit.*.ll)
+nunits=$(printf '%s\n' $units | wc -l | tr -d ' ')
+
 # The embedded compiler emits host-agnostic IR (no target header); clang supplies
 # the host triple, so silence the cosmetic -Woverride-module note.
-"$CC" -Wno-override-module -O2 -I"$GC_INC" -L"$GC_LIB" src/runtime/runtime.c "$ll" -lgc -o "$out"
-say "link $ll -> $out  [$(bytes "$out") bytes exe]"
+# shellcheck disable=SC2086
+"$CC" -Wno-override-module -O2 -I"$GC_INC" -L"$GC_LIB" src/runtime/runtime.c $units -lgc -o "$out"
+say "link $nunits unit(s) -> $out  [$(bytes "$out") bytes exe]"
 say "wrote $out (Chez-free AOT)"

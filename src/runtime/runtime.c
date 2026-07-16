@@ -439,6 +439,18 @@ val rt_read_all_stdin(void) {
   return rt_make_string(buf, (intptr_t)len);
 }
 
+/* --no-prelude channel for the embedded batch entry (change:
+ * embedded-runner-rehome).  The Chez-free runner (scheme-run / scheme-compile)
+ * forwards --no-prelude by setting EMIT_NO_PRELUDE in the environment; the
+ * embedded entry reads it back through this nullary primitive to decide whether
+ * to auto-import (scheme base).  A nullary env probe (mirroring rt_read_all_stdin's
+ * C-side channel) keeps the flag off the stdin source channel.  Returns a scheme
+ * boolean: #t when the variable is set and non-empty, #f otherwise. */
+val rt_no_prelude_p(void) {
+  const char *v = getenv("EMIT_NO_PRELUDE");
+  return (v && *v) ? TRUE_V : FALSE_V;
+}
+
 /* --- REPL request channel (change: repl-embedded-incremental) -------------
  * The interactive host drives the embedded compiler by calling its single ccc
  * `scheme_entry` repeatedly, one call per operation.  Because a ccc entry takes

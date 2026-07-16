@@ -131,11 +131,14 @@ library-structured source are frozen under `historical/genesis/`.
   embedded compiler (`bootstrap/embed-repl.ll`) and drives it in-process; built by `make repl-host`.
 - `src/run.cpp` — the in-process runner (`build/scheme-run`): links the compiled compiler
   (`bootstrap/embed.ll`) and JITs its output, so a whole program is compiled *and* run in one
-  process. `--emit` writes the IR to stdout.
+  process. With the prelude re-homed as `(scheme base)` the entry returns two modules (the
+  `(scheme base)` library and the program) separated by a boundary marker; the host splits on it
+  and JITs both. `--emit` writes the whole IR to stdout; `--no-prelude` skips the auto-import.
 - `bootstrap/` — committed host-agnostic stage-0 IR (the authoritative form): `schemec.ll`
   (batch filter), `embed.ll` (runner), `embed-repl.ll` (REPL); regenerate with `make regen`.
 - `tools/regen.sh` — the regenerator (ordered-`cat` assembly + self-hosted compile).
-- `bin/scheme-compile` — source→native-executable wrapper (`scheme-run --emit` + clang).
+- `bin/scheme-compile` — source→native-executable wrapper (`scheme-run --emit` + clang); splits
+  the emitted IR on the boundary marker and clang-links the `(scheme base)` unit + program.
 - `historical/genesis/` — the frozen pre-flattening genesis: the Chez Scheme assembler
   (`assemble-core.ss`) and library-structured `match.sls`/`util.ss` (provenance; not maintained).
 - `demos/` — example programs and the `run-tests.sh` (`RUNNER=scheme-run|aot`) / `run-backends.sh`
@@ -201,9 +204,12 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   style) and the final-value printer (write style: quoted strings, `#\`-prefixed chars).
 
 **Library & reader**
-- A prelude prepended to every program (user-wins shadowing, `--no-prelude`):
+- A prelude re-homed as the library `(scheme base)`, auto-imported into every program on all
+  three doors — the Chez driver, the REPL, and the Chez-free embedded runner
+  (`scheme-run`/`scheme-compile`) — with user-wins shadowing and `--no-prelude` to opt out:
   `list length reverse append map memq assq member assoc filter fold-left fold-right`,
   the n-ary character comparisons `char=? char<? char>? char<=? char>=?`, and `string->list`.
+  (The compiler's own bootstrap still prepends the prelude for its self-compilation.)
 - `read-from-string` — a recursive-descent Scheme reader (integers, symbols, lists,
   dotted/improper lists, `#t`/`#f`, characters incl. named `#\newline`/`#\space`/…,
   `"strings"` with `\n`/`\t`/`\r`/`\\`/`\"`/`\xHH;` escapes, `#(...)` vectors, `'`-quote
