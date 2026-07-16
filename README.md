@@ -292,5 +292,7 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   roadmap.
 
 **Performance / cleanup (deferred by design)**
-- No dead-code elimination (the whole prelude is emitted into every program); O(n)
-  codepoint string indexing; separate/precompiled prelude; immediate (non-heap) characters.
+- Tracked in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md): dead-code elimination for library
+  units, immediate (non-heap) characters, precompiled library objects, and O(n) codepoint
+  string indexing — each with cause, fix sketch, its OpenSpec change (once one exists), and a
+  remediation check-off.
