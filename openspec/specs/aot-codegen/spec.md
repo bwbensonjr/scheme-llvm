@@ -42,6 +42,12 @@ Boehm GC (`libgc`) into a runnable native executable.
   type header — a call to `rt_make_string` on an emitted private byte-array constant (with
   its byte length) — while a character literal is emitted as an inline **immediate** tagged
   constant encoding the codepoint, with no heap allocation and no `rt_make_char` call
+- **AND** the string header object carries, in addition to its byte length and byte pointer,
+  a stored codepoint length and a nullable auxiliary codepoint→byte index pointer (built
+  lazily by the runtime, `NULL` at construction); the emitted IR is unchanged — it still
+  lowers to a single `rt_make_string(ptr, i64)` call and the runtime populates the extra
+  header words — so the runtime/emitter value-representation contract holds without an IR
+  edit
 
 ### Requirement: Each pipeline stage is independently observable
 
