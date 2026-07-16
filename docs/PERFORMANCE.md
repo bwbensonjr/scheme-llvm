@@ -16,7 +16,7 @@ speed items in this list.
 | [P1](#p1-dead-code-elimination-for-library-units) | Dead-code elimination for library units | size | high | med | — | ☐ |
 | [P2](#p2-immediate-non-heap-characters) | Immediate (non-heap) characters | speed + cleanup | med | med | `immediate-characters` | ☑ |
 | [P3](#p3-precompiled-prelude--library-objects) | Precompiled prelude / library objects | build speed | low | low | — | ☐ |
-| [P4](#p4-on-codepoint-string-indexing) | O(n) codepoint string indexing | speed | low–med | med–high | — | ☐ |
+| [P4](#p4-on-codepoint-string-indexing) | O(n) codepoint string indexing | speed | low–med | med–high | `codepoint-string-indexing` | ☑ |
 
 Legend — **Value**: benefit if fixed. **Cost**: rough implementation effort/risk. These are
 estimates to aid sequencing, not commitments.
@@ -139,7 +139,7 @@ rather than pursued alone.
 
 ## P4 — O(n) codepoint string indexing
 
-**Status:** ☐ not started
+**Status:** ☑ done (change: `codepoint-string-indexing`)
 
 **Symptom.** `string-ref` at index _i_ costs O(_i_): a loop nested over `string-ref` is
 O(n²). This is inherent to the current storage decision (design D1: UTF-8 bytes,
@@ -159,7 +159,16 @@ fixing this is low until a workload appears that random-indexes large strings.
 - Switch to a fixed-width representation (e.g. Latin-1/UTF-32 hybrid à la CPython/Racket) —
   O(1) index at a memory cost; touches `string-set!`, `substring`, `equal?`, and storage.
 
-**OpenSpec change:** _none yet._
+**OpenSpec change:** `codepoint-string-indexing` (implemented). Chose the middle path — kept
+UTF-8 storage and added, to the string header, a stored codepoint length plus a lazily-built
+fixed-stride (32) codepoint→byte breadcrumb index. `string-length` is now O(1); an all-ASCII
+string (byte length == codepoint length) indexes in O(1) since codepoint index == byte offset;
+a multi-byte string builds the breadcrumb on first random access, turning an indexed traversal
+from O(n²) into O(n). `string-set!` drops the stale index. The change is confined to
+`src/runtime/runtime.c` — the emitter still lowers a literal to one `rt_make_string(ptr, i64)`
+call, so no IR or committed bootstrap regeneration was needed (self-hosting fixed point holds).
+The fixed-width rewrite was rejected as too heavy for a rare-in-practice case, against the
+small-clean-binary goal.
 
 ---
 

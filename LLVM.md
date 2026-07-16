@@ -151,8 +151,14 @@ segment is not a registered Boehm root, so the table array would be collected mi
 (caught by the `symbol-gc` demo across all three backends).
 
 **Strings (tag 7, header-word) and characters (immediate).** A string is an extended object
-`{HDR_STRING, byte-length, char *bytes}` storing UTF-8 bytes with an explicit byte length
-(so embedded NULs are fine). A character is an **immediate**: the boolean tag `001` is a
+`{HDR_STRING, byte-length, codepoint-length, char *bytes, cpidx *index}` storing UTF-8 bytes
+with an explicit byte length (so embedded NULs are fine). The stored codepoint length makes
+`string-length` O(1) and drives an ASCII fast path — when byte-length equals codepoint-length
+the string is all-ASCII, so codepoint index equals byte offset and `string-ref`/`substring`
+are O(1) with no scan. For genuinely multi-byte strings, `index` is a lazily-built (NULL until
+first random access), fixed-stride codepoint→byte breadcrumb table that turns an indexed
+traversal from O(n²) into O(n) — see backlog **P4** / change `codepoint-string-indexing`. A
+character is an **immediate**: the boolean tag `001` is a
 misc-immediate family, and subtype `SUB_CHAR` carries the full Unicode scalar value in the
 payload bits — no heap object, no interning, so equal codepoints are the same word and
 `eq?`/`eqv?` hold intrinsically. `rt_write` prints a string write-style between quotes (its
@@ -162,8 +168,9 @@ path: a private byte-array global (`@.str.lit.N`) plus a per-use `rt_make_string
 character literals emit the immediate constant inline (`(codepoint << 8) | SUB_CHAR | tag`),
 no runtime call. Strings are
 **mutable**: `string-set!` (`rt_string_set`) splices the UTF-8 buffer for the new codepoint
-and rewrites the object's length/pointer words in place, so the identity is preserved and
-aliases observe the change (O(n) per set); `string-copy` gives an independent duplicate.
+and rewrites the object's byte-length/bytes words in place, so the identity is preserved and
+aliases observe the change (O(n) per set); it drops any built breadcrumb `index` (now stale)
+back to NULL. `string-copy` gives an independent duplicate.
 
 **Vectors (tag 7, header-word).** A vector is an extended object
 `{HDR_VECTOR, length, elem0, …}` — mutable and fixed-length, each element a tagged `i64`.

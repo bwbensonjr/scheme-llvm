@@ -225,18 +225,33 @@ val rt_intern(const char *name) {
  * without needing a new primary tag. */
 static intptr_t ext_hdr(val v) { return as_ptr(v)[0]; }
 
-/* string: { HDR_STRING, byte-length, char *bytes } -- UTF-8, explicit length so
- * embedded NULs are fine (the trailing NUL is for C-side convenience only). */
+/* string: { HDR_STRING, byte-length, cp-length, char *bytes, cpidx *index }
+ * -- UTF-8, explicit byte length so embedded NULs are fine (the trailing NUL is
+ * for C-side convenience only).  Two extra words support codepoint indexing
+ * (change: codepoint-string-indexing / backlog P4):
+ *   cp-length  -- codepoint count, computed once here so string-length is O(1)
+ *                 and the ASCII fast path (byte-length == cp-length => index ==
+ *                 byte offset) is a single compare.
+ *   index      -- nullable pointer to a lazily-built codepoint->byte breadcrumb
+ *                 table (NULL here; built on first random access to a multi-byte
+ *                 string), turning an indexed traversal from O(n^2) to O(n). */
+static int      utf8_seq_len(unsigned char b);            /* fwd (defined below) */
+static intptr_t utf8_count(const unsigned char *b, intptr_t blen);
 val rt_make_string(const char *bytes, intptr_t len) {
   char *copy = (char *)GC_MALLOC_ATOMIC((size_t)len + 1);
   memcpy(copy, bytes, (size_t)len);
   copy[len] = '\0';
-  val *p = (val *)GC_MALLOC(3 * sizeof(val));
-  p[0] = HDR_STRING; p[1] = len; p[2] = (val)copy;
+  val *p = (val *)GC_MALLOC(5 * sizeof(val));
+  p[0] = HDR_STRING;
+  p[1] = len;
+  p[2] = (val)utf8_count((const unsigned char *)copy, len);
+  p[3] = (val)copy;
+  p[4] = (val)NULL;
   return tag_ptr(p, TAG_EXT);
 }
-static intptr_t    str_len(val v)   { return as_ptr(v)[1]; }
-static const char *str_bytes(val v) { return (const char *)as_ptr(v)[2]; }
+static intptr_t    str_len(val v)    { return as_ptr(v)[1]; }
+static intptr_t    str_cplen(val v)  { return as_ptr(v)[2]; }
+static const char *str_bytes(val v)  { return (const char *)as_ptr(v)[3]; }
 
 /* Exported string accessors so an embedding C/C++ host can read the bytes of a
  * scheme string value returned across the FFI boundary (e.g. the IR text the
@@ -292,11 +307,58 @@ static intptr_t utf8_decode_at(const unsigned char *s, intptr_t i) {
   }
 }
 
-/* byte offset of the cp-th codepoint of s (byte length blen); clamps at blen */
-static intptr_t utf8_offset(const unsigned char *s, intptr_t blen, intptr_t cp) {
+/* number of codepoints in the blen-byte UTF-8 buffer b */
+static intptr_t utf8_count(const unsigned char *b, intptr_t blen) {
   intptr_t i = 0, k = 0;
+  while (i < blen) { i += utf8_seq_len(b[i]); k++; }
+  return k;
+}
+
+/* byte offset of codepoint `cp`, resuming a forward walk from a known
+ * (start_byte, start_cp) breadcrumb; clamps at blen.  The plain from-zero walk
+ * is the (0, 0) case. */
+static intptr_t utf8_offset_from(const unsigned char *s, intptr_t blen,
+                                 intptr_t start_byte, intptr_t start_cp,
+                                 intptr_t cp) {
+  intptr_t i = start_byte, k = start_cp;
   while (i < blen && k < cp) { i += utf8_seq_len(s[i]); k++; }
   return i;
+}
+static intptr_t utf8_offset(const unsigned char *s, intptr_t blen, intptr_t cp) {
+  return utf8_offset_from(s, blen, 0, 0, cp);
+}
+
+/* --- codepoint->byte breadcrumb index (multi-byte strings only) ----------
+ * A fixed-stride sample of byte offsets: index[j] is the byte offset of
+ * codepoint j*CP_STRIDE.  Built lazily on first random access to a string that
+ * is not all-ASCII, stored in header word [4], and dropped on mutation.  With a
+ * constant stride each access scans at most CP_STRIDE codepoints from the
+ * nearest breadcrumb, so a full indexed traversal is O(n) build + O(n) access
+ * instead of O(n^2). */
+#define CP_STRIDE 32
+static intptr_t *cpidx_build(val s) {
+  const unsigned char *b = (const unsigned char *)str_bytes(s);
+  intptr_t blen = str_len(s), cplen = str_cplen(s);
+  intptr_t nb = cplen / CP_STRIDE + 1;
+  intptr_t *idx = (intptr_t *)GC_MALLOC_ATOMIC((size_t)nb * sizeof(intptr_t));
+  intptr_t i = 0, k = 0;
+  while (i < blen) {
+    if (k % CP_STRIDE == 0) idx[k / CP_STRIDE] = i;   /* k/CP_STRIDE < nb */
+    i += utf8_seq_len(b[i]);
+    k++;
+  }
+  if (k % CP_STRIDE == 0 && k / CP_STRIDE < nb) idx[k / CP_STRIDE] = i;  /* k == cplen */
+  as_ptr(s)[4] = (val)idx;
+  return idx;
+}
+/* byte offset of codepoint `cp` in a multi-byte string, via the breadcrumb
+ * index (building it on first use). */
+static intptr_t cpidx_offset(val s, intptr_t cp) {
+  intptr_t *idx = (intptr_t *)as_ptr(s)[4];
+  if (!idx) idx = cpidx_build(s);
+  intptr_t j = cp / CP_STRIDE;
+  return utf8_offset_from((const unsigned char *)str_bytes(s), str_len(s),
+                          idx[j], j * CP_STRIDE, cp);
 }
 
 /* --- character operations ---------------------------------------------- */
@@ -304,22 +366,19 @@ val rt_char_to_integer(val c) { return FIX(CHAR_CP(c)); }
 val rt_integer_to_char(val n) { return rt_make_char(UNFIX(n)); }
 
 /* --- string operations (codepoint-indexed over UTF-8 storage, design D1) --- */
-val rt_string_length(val s) {
-  const unsigned char *b = (const unsigned char *)str_bytes(s);
-  intptr_t blen = str_len(s), i = 0, k = 0;
-  while (i < blen) { i += utf8_seq_len(b[i]); k++; }
-  return FIX(k);
-}
+val rt_string_length(val s) { return FIX(str_cplen(s)); }   /* O(1): stored count */
 val rt_string_ref(val s, val idx) {
   const unsigned char *b = (const unsigned char *)str_bytes(s);
-  intptr_t off = utf8_offset(b, str_len(s), UNFIX(idx));
+  intptr_t i = UNFIX(idx);
+  /* ASCII fast path: byte length == codepoint count => index is the byte offset. */
+  intptr_t off = (str_len(s) == str_cplen(s)) ? i : cpidx_offset(s, i);
   return rt_make_char(utf8_decode_at(b, off));
 }
 val rt_substring(val s, val start, val end) {
   const unsigned char *b = (const unsigned char *)str_bytes(s);
-  intptr_t blen = str_len(s);
-  intptr_t so = utf8_offset(b, blen, UNFIX(start));
-  intptr_t eo = utf8_offset(b, blen, UNFIX(end));
+  intptr_t si = UNFIX(start), ei = UNFIX(end), so, eo;
+  if (str_len(s) == str_cplen(s)) { so = si; eo = ei; }   /* ASCII fast path */
+  else { so = cpidx_offset(s, si); eo = cpidx_offset(s, ei); }
   return rt_make_string((const char *)(b + so), eo - so);
 }
 /* intern the string's bytes (NUL-terminated; safe for source identifiers) */
@@ -369,9 +428,12 @@ val rt_make_string_fill(val k, val ch) {
 /* string-set!: replace codepoint `idx` with `ch` in place.  UTF-8 is variable
  * width, so splice: rebuild the byte buffer with ch's bytes in place of the old
  * codepoint's, then overwrite the object's byte-length (word 1) and bytes
- * pointer (word 2) so the identity (and every alias) sees the update.  O(n).
+ * pointer (word 3) so the identity (and every alias) sees the update.  O(n).
  * The old buffer and `s` stay reachable across the allocation (s is live and
- * word 2 still points at the old bytes until the final store). */
+ * word 3 still points at the old bytes until the final store).  The codepoint
+ * count (word 2) is invariant -- one codepoint replaces one -- so it is left
+ * as-is; the lazily-built breadcrumb index (word 4) is byte-offset-based and now
+ * stale, so it is dropped back to NULL to be rebuilt on demand. */
 val rt_string_set(val s, val idx, val ch) {
   const unsigned char *b = (const unsigned char *)str_bytes(s);
   intptr_t blen = str_len(s);
@@ -386,7 +448,8 @@ val rt_string_set(val s, val idx, val ch) {
   memcpy(buf + so + le, b + eo, (size_t)(blen - eo)); /* suffix */
   buf[newlen] = '\0';
   as_ptr(s)[1] = (val)newlen;
-  as_ptr(s)[2] = (val)buf;
+  as_ptr(s)[3] = (val)buf;
+  as_ptr(s)[4] = (val)NULL;                         /* drop stale breadcrumb index */
   return NIL_V;
 }
 /* string-copy: a fresh string object over a fresh copy of the bytes. */
