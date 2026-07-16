@@ -388,15 +388,101 @@
     (for-each (lambda (r) (visit r '())) roots)
     (values (reverse order) cache)))
 
-;; A library's artifacts are FRESH when both exist and neither is older than the
-;; source, so an unchanged unit is reused instead of recompiled (change:
-;; module-generalize).  file-modification-time returns a time-utc object; compare
-;; with time<=? (src not newer than the artifact).
-(define (artifacts-fresh? src ll expf)
+;; --- compiler-identity stamp (change: artifact-compiler-stamp) -------------
+;; Artifact freshness must depend on the COMPILER, not just the library source:
+;; a compiler/emitter change with unchanged source would otherwise reuse stale
+;; IR (the classic Make footgun -- the toolchain is not a listed prerequisite).
+;; We stamp each unit with a version marker + a content hash of the compiler
+;; sources that determine emitted IR, matching Rust (.rlib SVH), GHC (.hi
+;; version), Go, and Bazel.  In this driver path the compiler runs as interpreted
+;; source, so those files are on disk at run time -- hashing them IS the running
+;; compiler's identity.
+
+;; Version marker for the stamp FORMAT (D1): bump by hand to force a global
+;; invalidation deliberately (e.g. if the stamp scheme itself changes).
+(define compiler-stamp-version 1)
+
+;; Exactly the (include ...) block at the top of this file PLUS this file itself,
+;; in a fixed order -- the sources that turn library source -> IR in this path.
+;; KEEP IN SYNC with the include block near line 20 (change: artifact-compiler-stamp).
+(define compiler-source-files
+  '("src/match.scm"
+    "src/util.scm"
+    "src/parse.ss"
+    "src/passes/expand.ss"
+    "src/passes/recognize-let.ss"
+    "src/passes/convert-assignments.ss"
+    "src/passes/convert-closures.ss"
+    "src/passes/lower.ss"
+    "src/emit.ss"
+    "src/core.ss"
+    "src/compile.ss"))
+
+;; A file's raw bytes as a bytevector (binary; content-based, immune to touch /
+;; checkout / clock skew -- the mtime fragility that just bit us on sources).
+(define (file-bytes path)
+  (let* ([p (open-file-input-port path)]
+         [bv (get-bytevector-all p)])
+    (close-port p)
+    (if (eof-object? bv) (bytevector) bv)))
+
+;; Dependency-free 64-bit FNV-1a folded into `acc` (D2).  Non-cryptographic: it
+;; guards against accidental staleness, not adversarial collisions, and adds no
+;; dependency ("no new dependencies").
+(define fnv64-prime 1099511628211)
+(define fnv64-mask (- (expt 2 64) 1))
+(define (fnv1a-bytes acc bv)
+  (let ([n (bytevector-length bv)])
+    (let loop ([i 0] [h acc])
+      (if (= i n)
+          h
+          (loop (+ i 1)
+                (bitwise-and (* (bitwise-xor h (bytevector-u8-ref bv i))
+                                fnv64-prime)
+                             fnv64-mask))))))
+
+;; The compiler-identity stamp (D1): (emit-artifact-stamp VERSION HEX-DIGEST),
+;; the digest hashing the compiler sources (fixed order) then the host target
+;; header -- both determine the emitted IR (the header is prepended to every
+;; .ll).  Computed ONCE per build (D4) and compared to each unit's recorded stamp.
+(define fnv64-offset-basis 14695981039346656037)
+(define (compiler-stamp header)
+  (let* ([h (fold-left (lambda (acc f) (fnv1a-bytes acc (file-bytes f)))
+                       fnv64-offset-basis
+                       compiler-source-files)]
+         [h (fnv1a-bytes h (string->utf8 header))])
+    (list 'emit-artifact-stamp compiler-stamp-version (number->string h 16))))
+
+;; Read back a unit's recorded stamp datum, or #f if the sidecar is absent/empty
+;; (a torn write fails safe toward rebuild -- D3).
+(define (read-stamp stampf)
+  (and (file-exists? stampf)
+       (let ([forms (read-program stampf)])
+         (and (pair? forms) (car forms)))))
+
+;; A library's artifacts are FRESH when both exist, neither is older than the
+;; source, AND the recorded compiler stamp equals the current one (change:
+;; module-generalize + artifact-compiler-stamp).  file-modification-time returns
+;; a time-utc object; compare with time<=? (src not newer than the artifact).
+(define (artifacts-fresh? src ll expf stampf stamp)
   (and (file-exists? ll) (file-exists? expf)
        (let ([st (file-modification-time src)])
          (and (time<=? st (file-modification-time ll))
-              (time<=? st (file-modification-time expf))))))
+              (time<=? st (file-modification-time expf))))
+       (equal? (read-stamp stampf) stamp)))
+
+;; Why an artifact is being rebuilt, for narration (docs/OUTPUT.md): absent,
+;; its source changed, or the compiler that produced it differs (stamp mismatch).
+;; Compute this BEFORE the rebuild rewrites the artifacts.
+(define (rebuild-reason src ll expf stampf stamp)
+  (cond
+    [(not (and (file-exists? ll) (file-exists? expf))) "missing"]
+    [(let ([st (file-modification-time src)])
+       (not (and (time<=? st (file-modification-time ll))
+                 (time<=? st (file-modification-time expf)))))
+     "source changed"]
+    [(not (equal? (read-stamp stampf) stamp)) "compiler changed"]
+    [else "stale"]))
 
 ;; Compile+link a program that imports libraries.  `exe` is the output path.
 ;; Resolves the transitive import closure, builds/reuses each unit in topological
@@ -419,7 +505,10 @@
          [direct-imports (with-scheme-base (car (collect-imports user-forms)) prelude?)]
          [manifest       (read-manifest *manifest-path*)]
          [prelude-forms  (if prelude? (prelude-macro-forms) '())]
-         [header         (host-target-header)])
+         [header         (host-target-header)]
+         ;; compiler identity, computed ONCE per build (D4) and compared to each
+         ;; unit's recorded .stamp in artifacts-fresh? (change: artifact-compiler-stamp).
+         [stamp          (compiler-stamp header)])
     (let-values ([(order dl-cache) (toposort-libs direct-imports manifest)])
       ;; build/reuse each unit in topo order, accumulating (name . export-table)
       ;; and the .ll paths for linking.
@@ -442,14 +531,17 @@
                    [dl      (cdr (assoc name dl-cache))]
                    [base    (lib-basename name)]
                    [ll      (string-append art-dir "/" base ".ll")]
-                   [expf    (string-append art-dir "/" base ".exports")])
-              (if (artifacts-fresh? (cadr entry) ll expf)
+                   [expf    (string-append art-dir "/" base ".exports")]
+                   [stampf  (string-append art-dir "/" base ".stamp")])
+              (if (artifacts-fresh? (cadr entry) ll expf stampf stamp)
                   ;; reuse: read the export table back from the artifact
                   (let ([table (car (read-program expf))])
                     (note "reuse ~s -> ~a  [fresh]\n" name ll)
                     (loop (cdr libs) (cons (cons name table) tables) (cons ll lls)))
-                  ;; rebuild: import env comes from this lib's already-built deps
-                  (let* ([imp-tables (map (lambda (n) (cdr (assoc n tables))) (cadr dl))]
+                  ;; rebuild: import env comes from this lib's already-built deps.
+                  ;; Capture the reason BEFORE writing (the writes make it fresh again).
+                  (let* ([reason  (rebuild-reason (cadr entry) ll expf stampf stamp)]
+                         [imp-tables (map (lambda (n) (cdr (assoc n tables))) (cadr dl))]
                          [res     (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl)
                                                    imp-tables no-dump)]
                          [ll-text (string-append header (car res))])
@@ -457,7 +549,13 @@
                     (write-text ll ll-text)
                     (let ([o (open-output-file expf 'replace)])
                       (write (cadr res) o) (newline o) (close-port o))
-                    (note "compile ~s -> ~a  [~a bytes]\n" name ll (string-length ll-text))
+                    ;; write the .stamp LAST so a torn write fails safe toward
+                    ;; rebuild (D3); `write` (not display) so the digest string
+                    ;; round-trips as a string, not a symbol.
+                    (let ([o (open-output-file stampf 'replace)])
+                      (write stamp o) (newline o) (close-port o))
+                    (note "compile ~s -> ~a  [~a bytes, recompile: ~a]\n"
+                          name ll (string-length ll-text) reason)
                     (loop (cdr libs) (cons (cons name (cadr res)) tables) (cons ll lls))))))))))
 
 ;; --- modular-set backend consumers (change: driver-backend-rehome) ---------

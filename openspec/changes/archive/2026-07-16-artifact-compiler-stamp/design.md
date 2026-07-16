@@ -154,6 +154,25 @@ mtime-only (with the known bug). No persisted format depends on the stamp beyond
 
 - D2: use a Chez-provided digest vs. an in-language hash — settle at implementation time by
   what Chez exposes without adding a dependency (default: in-language FNV-1a/djb2).
+  **Resolved:** in-language 64-bit FNV-1a over the source bytes (no dependency added).
 - Whether the host target header (`host-target-header`) should feed the stamp too — it can
   affect emitted IR. Likely yes for completeness; low cost to include. Confirm during
-  implementation.
+  implementation. **Resolved: yes** — the header is prepended to every `.ll`, so it determines
+  emitted IR; it is folded into the digest after the compiler sources.
+
+## Outcome (verified)
+
+- **Root cause was cache invalidation, not the emitter.** `src/emit.ss` was already correct
+  (`#t` = `257`); the defect was that `artifacts-fresh?` keyed only on library-source mtime and
+  omitted the compiler, so the pre-`immediate-characters` `build/lib/scheme.base.ll` (`#t` = `9`,
+  which aliases `#\nul`) was reused. No emitter change was needed or made.
+- Adding the compiler-identity stamp forced the one-time regeneration automatically (units
+  lacked a `.stamp` ⇒ treated as compiler-changed): the regenerated `scheme.base.ll` carries
+  `#t` = `i64 257` (×8, matching `bootstrap/scheme.base.ll`), and `(char<? #\a #\b)` now returns
+  `#t` instead of `#\nul`.
+- Full verification: `RUNNER=aot demos/run-tests.sh` 53/0 (was 51/2), `demos/run-backends.sh`
+  43/0 (aot=jit=bitcode), `demos/run-embedded.sh` 53/0, `./run-all-tests.sh` 6/6 suites,
+  `./run-dev-tests.sh` 17/17 suites (incl. self-hosting fixed point, REPL-vs-batch, anti-stale
+  trust-check). Direct invalidation check: editing `src/emit.ss` triggers
+  `recompile: compiler changed`; a no-op rerun reports `[fresh]`; reverting restores the identical
+  digest (content-based, deterministic).

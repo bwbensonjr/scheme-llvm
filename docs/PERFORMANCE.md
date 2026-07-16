@@ -124,6 +124,11 @@ freshness-based reuse: `build-modular-artifacts` builds each unit once and
 `artifacts-fresh?` reuses it when the source has not changed
 (`src/compile.ss:391-461`). So "separate prelude" is done.
 
+Freshness now also keys on **compiler identity** (change: `artifact-compiler-stamp`): each unit
+carries a `.stamp` sidecar (version + content hash of the compiler sources + host target
+header), and a stamp mismatch forces recompilation. Any future precompiled `.bc`/`.o` prelude
+units must key on the same stamp so a compiler change never links a stale precompiled unit.
+
 **Symptom (remaining).** Each build still re-assembles the unit `.ll` (text LLVM IR) to
 bitcode/object at link time; there is no committed precompiled `.bc`/`.o` for the stable
 `(scheme base)`. Minor build-time cost, repeated on every link.

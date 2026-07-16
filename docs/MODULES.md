@@ -152,8 +152,14 @@ session** (and into the compiler's own build), as if the source began with `(imp
   *internal* name (`@"rename.lib:%fast-map"` for the `fmap` export). Importers reference these as
   external globals.
 - **Artifacts** — each library compiles to `<artifacts>/<name>.ll` plus a readable
-  `<name>.exports` table (`(NAME ((external . "mangled") …))`). Artifacts are reused when fresh
-  (source no newer than artifact) and rebuilt otherwise.
+  `<name>.exports` table (`(NAME ((external . "mangled") …))`) and a `<name>.stamp` sidecar
+  recording the compiler that produced them. Artifacts are reused only when fresh — the source
+  is no newer than the artifact **and** the recorded compiler-identity stamp matches the current
+  compiler — and rebuilt otherwise. The stamp is a version marker plus a content hash over the
+  compiler sources that determine emitted IR (the `compile.ss` `(include …)` set plus the host
+  target header), so a compiler/emitter change invalidates cached units even when their source
+  is untouched — the toolchain is part of the cache key, as in Rust (`.rlib` SVH), GHC (`.hi`
+  version), Go, and Bazel (change: `artifact-compiler-stamp`).
 
 ## Scope & limits
 
