@@ -28,6 +28,24 @@ check repl-import   $'(import (mylib))\n(greet)\n'                       142
 check repl-both     $'(import (liba))\n(import (libb))\n(+ (a-val) (b-val))\n' 43
 check repl-shadow   $'(import (mylib))\n(define (greet) 99)\n(greet)\n'  99
 
+echo "generalize: transitive imports, rename, diamond (REPL door)"
+# (chain-a) transitively imports (chain-b); the fixpoint preload loads chain-b first
+# even though the manifest lists chain-a earlier (topological, not manifest, order).
+check repl-chain    $'(import (chain-a))\n(a-plus)\n'                    15
+check repl-rename   $'(import (rename-lib))\n(fmap)\n'                   77
+# diamond: (dia-a) and (dia-b) both import (dia-c); loaded/initialized once each.
+check repl-diamond  $'(import (dia-a))\n(import (dia-b))\n(+ (a-val) (b-val))\n' 35
+
+# a renamed export exposes only its EXTERNAL name; the internal name stays unbound.
+echo "rename hides the internal name (REPL door)"
+rerr="$(printf '(import (rename-lib))\n(%%fast-map)\n' | "$HOST" 2>&1 >/dev/null)"
+rval="$(printf '(import (rename-lib))\n(fmap)\n' | "$HOST" 2>/dev/null | awk 'NF{v=$0}END{print v}')"
+if echo "$rerr" | grep -q "unbound variable %fast-map" && [ "$rval" = "77" ]; then
+  echo "  [OK  ] rename-hides-internal  (fmap => 77, %fast-map unbound)"; pass=$((pass+1))
+else
+  echo "  [FAIL] rename-hides-internal  (fmap=$rval; internal name should be unbound)"; fail=$((fail+1))
+fi
+
 # an imported name is unbound until imported; the session must survive the error.
 echo "unbound-before-import (session survives)"
 errout="$(printf '(greet)\n(+ 2 3)\n' | "$HOST" 2>&1 >/dev/null)"   # stderr only

@@ -175,23 +175,41 @@
              (cdr entry))
            #t))))
 
+;; Assemble the import tables (list (name export-alist) ...) for a library's
+;; direct imports from the already-loaded units in *repl-libs* (change:
+;; module-generalize).  Returns #f if any import is not loaded yet, so the host
+;; can defer this library and retry after its dependencies load (topological order
+;; emerges from the fixpoint preload).
+(define (repl-import-tables imports)
+  (let loop ([imps imports] [acc '()])
+    (if (null? imps)
+        (reverse acc)
+        (let ([entry (assoc (car imps) *repl-libs*)])
+          (and entry
+               (loop (cdr imps) (cons (list (car imps) (cdr entry)) acc)))))))
+
 ;; Compile a library from its source text (host read the file): parse the
-;; define-library, compile the unit, remember its exports, and return
-;; (ok . (ir . init-symbol)) so the host addIRModules the unit and runs its
-;; one-shot @"L:__init" once.  The session gensym counter is preserved across the
-;; compile: library code labels are @"L:code_N" (qualified, so a per-library reset
-;; is safe), but interactive forms and the prelude share the unqualified @code_N
-;; namespace, so the session counter must stay monotonic.
+;; define-library, resolve its imports against already-loaded units, compile the
+;; unit, remember its exports, and return (ok . (ir . init-symbol)) so the host
+;; addIRModules the unit and runs its one-shot @"L:__init" once.  If a direct
+;; import is not loaded yet, return (deferred . name) so the host retries later
+;; (change: module-generalize).  The session gensym counter is preserved across
+;; the compile: library code labels are @"L:code_N" (qualified, so a per-library
+;; reset is safe), but interactive forms and the prelude share the unqualified
+;; @code_N namespace, so the session counter must stay monotonic.
 (define (repl-load-library-text text)
   (guard (e (#t (cons (quote error) (repl-error->string e))))
-    (let ([saved counter])
-      (let* ([forms (read-all-from-string text)]
-             [dl    (parse-define-library (car forms))]
-             [res   (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl) no-dump)]
-             [name  (car dl)])
-        (set! counter saved)                 ; undo compile-library's reset-counter!
-        (set! *repl-libs* (cons (cons name (cadr (cadr res))) *repl-libs*))
-        (cons (quote ok) (cons (car res) (mangle name "__init")))))))
+    (let* ([forms (read-all-from-string text)]
+           [dl    (parse-define-library (car forms))]
+           [name  (car dl)]
+           [tables (repl-import-tables (cadr dl))])   ; #f if a dep is not loaded yet
+      (if (not tables)
+          (cons (quote deferred) name)                ; retry after dependencies load
+          (let ([saved counter])
+            (let ([res (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl) tables no-dump)])
+              (set! counter saved)                    ; undo compile-library's reset-counter!
+              (set! *repl-libs* (cons (cons name (cadr (cadr res))) *repl-libs*))
+              (cons (quote ok) (cons (car res) (mangle name "__init")))))))))
 
 ;; Parse a manifest's text and return its source paths, newline-joined, so the
 ;; host (which owns file I/O) can read each library source and load it (mode 4).

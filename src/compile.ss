@@ -275,47 +275,106 @@
 (define (write-text path text)
   (let ([o (open-output-file path 'replace)]) (display text o) (close-port o)))
 
+;; --- library dependency graph (change: module-generalize) ------------------
+;; A library may import other libraries, so the build resolves the TRANSITIVE
+;; closure of a program's imports, orders it topologically (dependencies before
+;; dependents), and rejects cycles -- all in the driver; the pure core only ever
+;; sees one unit's forms plus its dependencies' export tables as data.
+
+;; Parse a library name's source (via the manifest) into (name imports exports body).
+(define (read-define-library manifest name)
+  (parse-define-library (car (read-program (cadr (manifest-lookup manifest name))))))
+
+;; Topologically sort the transitive closure of `roots` (a list of library names).
+;; Returns (values order dl-cache): `order` lists every library in the closure with
+;; dependencies before dependents; `dl-cache` is an alist name -> parsed
+;; define-library so callers avoid re-reading sources.  A back-edge (a name already
+;; on the current DFS path) is an import cycle -> compile-time error.
+(define (toposort-libs roots manifest)
+  (let ([order '()] [visited '()] [cache '()])
+    (define (get-dl name)
+      (cond [(assoc name cache) => cdr]
+            [else (let ([dl (read-define-library manifest name)])
+                    (set! cache (cons (cons name dl) cache)) dl)]))
+    (define (visit name path)
+      (cond
+        [(member name visited) (if #f #f)]                    ; already finished (diamond)
+        [(member name path)
+         (error 'build "import cycle among libraries" (reverse (cons name path)))]
+        [else
+         (for-each (lambda (dep) (visit dep (cons name path))) (cadr (get-dl name)))
+         (set! visited (cons name visited))
+         (set! order (cons name order))]))                    ; finished after its deps
+    (for-each (lambda (r) (visit r '())) roots)
+    (values (reverse order) cache)))
+
+;; A library's artifacts are FRESH when both exist and neither is older than the
+;; source, so an unchanged unit is reused instead of recompiled (change:
+;; module-generalize).  file-modification-time returns a time-utc object; compare
+;; with time<=? (src not newer than the artifact).
+(define (artifacts-fresh? src ll expf)
+  (and (file-exists? ll) (file-exists? expf)
+       (let ([st (file-modification-time src)])
+         (and (time<=? st (file-modification-time ll))
+              (time<=? st (file-modification-time expf))))))
+
 ;; Compile+link a program that imports libraries.  `exe` is the output path.
+;; Resolves the transitive import closure, builds/reuses each unit in topological
+;; order (its import env drawn from its already-built dependencies' export tables),
+;; compiles the program against its DIRECT imports, and links runtime + every unit
+;; in the closure + the program.  The program's @scheme_entry runs the whole
+;; closure's __init in dependency order (change: module-generalize).
 (define (build-modular-program src exe prelude?)
-  (let* ([user-forms    (read-program src)]
-         [imported-libs (car (collect-imports user-forms))]
-         [manifest      (read-manifest *manifest-path*)]
-         [prelude-forms (if prelude? (read-program prelude-path) '())]
-         [header        (host-target-header)])
-    ;; compile each imported library -> <art>/<base>.ll + <base>.exports
-    (let loop ([libs imported-libs] [lls '()] [tables '()])
-      (if (null? libs)
-          ;; all libraries compiled: compile the program and link everything
-          (let* ([prog-ll (string-append exe ".ll")]   ; beside the exe, not the source
-                 [prog-ir (compile-program-with-imports
-                            prelude-forms user-forms (reverse tables) no-dump)]
-                 [prog-text (string-append header prog-ir)])
-            (write-text prog-ll prog-text)
-            (note "compile ~a -> ~a  [~a bytes]\n" src prog-ll (string-length prog-text))
-            (let ([cmd (string-append
-                         "clang -Wno-override-module -I" gc-inc " -L" gc-lib " " runtime-c " "
-                         (apply string-append (map (lambda (l) (string-append l " ")) (reverse lls)))
-                         prog-ll " -lgc -o " exe)])
-              (sh "clang" cmd)
-              (note "link ~a + ~a unit(s) -> ~a  [aot, modules]\n"
-                    prog-ll (length lls) exe)))
-          ;; compile one library
-          (let* ([name    (car libs)]
-                 [entry   (manifest-lookup manifest name)]
-                 [art-dir (caddr entry)]
-                 [lib-fs  (read-program (cadr entry))]
-                 [dl      (parse-define-library (car lib-fs))]
-                 [res     (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl) no-dump)]
-                 [base    (lib-basename name)]
-                 [ll      (string-append art-dir "/" base ".ll")]
-                 [expf    (string-append art-dir "/" base ".exports")]
-                 [ll-text (string-append header (car res))])
-            (sh "mkdir" (string-append "mkdir -p " art-dir))
-            (write-text ll ll-text)
-            (let ([o (open-output-file expf 'replace)])
-              (write (cadr res) o) (newline o) (close-port o))
-            (note "compile ~s -> ~a  [~a bytes]\n" name ll (string-length ll-text))
-            (loop (cdr libs) (cons ll lls) (cons (cadr res) tables)))))))
+  (let* ([user-forms     (read-program src)]
+         [direct-imports (car (collect-imports user-forms))]
+         [manifest       (read-manifest *manifest-path*)]
+         [prelude-forms  (if prelude? (read-program prelude-path) '())]
+         [header         (host-target-header)])
+    (let-values ([(order dl-cache) (toposort-libs direct-imports manifest)])
+      ;; build/reuse each unit in topo order, accumulating (name . export-table)
+      ;; and the .ll paths for linking.
+      (let loop ([libs order] [tables '()] [lls '()])
+        (if (null? libs)
+            ;; every unit ready: compile the program against its DIRECT imports'
+            ;; tables, ordering the whole closure's inits by topo order.
+            (let* ([direct-tables (map (lambda (n) (cdr (assoc n tables))) direct-imports)]
+                   [prog-ll   (string-append exe ".ll")]      ; beside the exe, not the source
+                   [prog-ir   (compile-program-with-imports
+                                prelude-forms user-forms direct-tables order no-dump)]
+                   [prog-text (string-append header prog-ir)])
+              (write-text prog-ll prog-text)
+              (note "compile ~a -> ~a  [~a bytes]\n" src prog-ll (string-length prog-text))
+              (let ([cmd (string-append
+                           "clang -Wno-override-module -I" gc-inc " -L" gc-lib " " runtime-c " "
+                           (apply string-append (map (lambda (l) (string-append l " ")) (reverse lls)))
+                           prog-ll " -lgc -o " exe)])
+                (sh "clang" cmd)
+                (note "link ~a + ~a unit(s) -> ~a  [aot, modules]\n"
+                      prog-ll (length lls) exe)))
+            ;; build or reuse one library
+            (let* ([name    (car libs)]
+                   [entry   (manifest-lookup manifest name)]
+                   [art-dir (caddr entry)]
+                   [dl      (cdr (assoc name dl-cache))]
+                   [base    (lib-basename name)]
+                   [ll      (string-append art-dir "/" base ".ll")]
+                   [expf    (string-append art-dir "/" base ".exports")])
+              (if (artifacts-fresh? (cadr entry) ll expf)
+                  ;; reuse: read the export table back from the artifact
+                  (let ([table (car (read-program expf))])
+                    (note "reuse ~s -> ~a  [fresh]\n" name ll)
+                    (loop (cdr libs) (cons (cons name table) tables) (cons ll lls)))
+                  ;; rebuild: import env comes from this lib's already-built deps
+                  (let* ([imp-tables (map (lambda (n) (cdr (assoc n tables))) (cadr dl))]
+                         [res     (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl)
+                                                   imp-tables no-dump)]
+                         [ll-text (string-append header (car res))])
+                    (sh "mkdir" (string-append "mkdir -p " art-dir))
+                    (write-text ll ll-text)
+                    (let ([o (open-output-file expf 'replace)])
+                      (write (cadr res) o) (newline o) (close-port o))
+                    (note "compile ~s -> ~a  [~a bytes]\n" name ll (string-length ll-text))
+                    (loop (cdr libs) (cons (cons name (cadr res)) tables) (cons ll lls))))))))))
 
 ;; --- argument handling ---
 ;; `via?` (env SCHEMEC=<path> or --via-schemec) routes the batch forms->IR step

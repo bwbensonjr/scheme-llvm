@@ -76,9 +76,13 @@
 (define (single-define-library forms)
   (and (pair? forms) (null? (cdr forms)) (define-library-form? (car forms))
        (car forms)))
+;; The lone-define-library filter path (scheme-run --emit / compile-source-string)
+;; has no manifest, so it resolves no imports: import-free libraries only (a library
+;; with imports is built through build-modular-program / the REPL preload, which
+;; supply its dependencies' export tables).  import-tables is '() here.
 (define (compile-library-form form dump)
   (let ([dl (parse-define-library form)])
-    (car (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl) dump))))
+    (car (compile-library (car dl) (cadr dl) (caddr dl) (cadddr dl) '() dump))))
 
 ;; convenience: source text -> IR text (no prelude, no header).  This is the
 ;; core's self-hosting-facing contract; the driver adds prelude/header/toolchain.
@@ -120,8 +124,20 @@
 (define (define-library-form? f) (and (pair? f) (eq? (car f) 'define-library)))
 (define (import-form? f) (and (pair? f) (eq? (car f) 'import)))
 
+;; An export spec is either a bare name `n` or a rename `(rename internal external)`
+;; (change: module-generalize).  Normalize each to a pair (external . internal): the
+;; external name is what importers see (the export-table key); the internal name is
+;; what the library defines and what the emitted symbol is based on.  A bare name is
+;; (n . n).  The symbol is ALWAYS the internal name, so rename is pure table
+;; indirection with no new emission logic.
+(define (normalize-export spec)
+  (if (pair? spec)                          ; (rename internal external)
+      (cons (caddr spec) (cadr spec))       ; (external . internal)
+      (cons spec spec)))                    ; bare: external == internal
+
 ;; (define-library (name ...) decl ...) -> (list name imports exports body-forms).
-;; decls: (export n ...) | (import (L) ...) | (begin form ...) | a bare form.
+;; decls: (export spec ...) | (import (L) ...) | (begin form ...) | a bare form.
+;; Each export is normalized to an (external . internal) pair (see normalize-export).
 (define (parse-define-library form)
   (let ([name (cadr form)])
     (let loop ([ds (cddr form)] [imps '()] [exps '()] [body '()])
@@ -130,7 +146,7 @@
           (let ([d (car ds)])
             (cond
               [(and (pair? d) (eq? (car d) 'export))
-               (loop (cdr ds) imps (append (reverse (cdr d)) exps) body)]
+               (loop (cdr ds) imps (append (reverse (map normalize-export (cdr d))) exps) body)]
               [(and (pair? d) (eq? (car d) 'import))
                (loop (cdr ds) (append (reverse (cdr d)) imps) exps body)]
               [(and (pair? d) (eq? (car d) 'begin))
@@ -157,14 +173,29 @@
 (define (unit-lcode il unit)
   (lower-program (convert-closures (convert-assignments (recognize-let il))) unit))
 
+;; An import environment is an alist external-name -> mangled-symbol, built from a
+;; list of imported libraries' export tables (each `(name ((ext . mangled) ...))`,
+;; as returned by compile-library).  The mangled string is interned to a symbol so
+;; resolution can emit it as a (global-ref sym); because that symbol is already
+;; unit-qualified (`b:add1`), emit does not re-mangle it and it becomes an external
+;; global.  Shared by compile-library (transitive lib->lib imports) and
+;; compile-program-with-imports (change: module-generalize).
+(define (import-tables->env-alist import-tables)
+  (map (lambda (p) (cons (car p) (string->symbol (cdr p))))
+       (apply append (map cadr import-tables))))
+
 ;; Compile a library's declarations into (list ir-text export-table).
-;;   name        : library name (list of symbol parts)
-;;   exports     : exported internal names (procedures; bare names in v0)
-;;   body-forms  : the library's top-level defines (a mutually-recursive group)
+;;   name          : library name (list of symbol parts)
+;;   exports       : (external . internal) pairs (see normalize-export)
+;;   body-forms    : the library's top-level defines (a mutually-recursive group)
+;;   import-tables : the export tables of the libraries THIS library imports (its
+;;                   direct dependencies); '() for an import-free library.
 ;; export-table : (list name ((external-name . mangled-string) ...)).
-;; Stage 1 libraries import nothing and do not share the prelude (that is Stage 3),
-;; so the body uses primitives / core forms only.
-(define (compile-library name imports exports body-forms dump)
+;; A library may import other libraries (change: module-generalize): its body
+;; resolves those imports' exports as external globals, exactly as a program does.
+;; Libraries do not share the prelude (that is Stage 3), so the body uses
+;; primitives / core forms / imported bindings only.
+(define (compile-library name imports exports body-forms import-tables dump)
   (reset-counter!)
   (let* ([me+rf (collect-define-syntax body-forms)]
          [macro-env (car me+rf)]
@@ -172,12 +203,17 @@
          [known (compute-known macro-env runtime)]
          [defs  (filter define-form? runtime)]
          [defined-names (map (lambda (p) (car (normalize-define p))) defs)]
+         [import-env-alist (import-tables->env-alist import-tables)]
          [env   (make-repl-env)])
+    ;; validate each export's INTERNAL name is defined at the library's top level.
     (for-each
       (lambda (e)
-        (unless (memq e defined-names)
-          (error 'compile-library "export of a name the library does not define" e)))
+        (unless (memq (cdr e) defined-names)
+          (error 'compile-library "export of a name the library does not define" (cdr e))))
       exports)
+    ;; seed the import environment FIRST, so the unit's own defines (registered
+    ;; next, consed on top) shadow an imported name of the same spelling.
+    (vector-set! env 0 import-env-alist)
     ;; phase 1: register every top-level define (plain names) for mutual reference
     (for-each (lambda (f) (unit-register-define! env f)) defs)
     ;; phase 2: lower each define body as one mutually-recursive group (register? #f).
@@ -191,19 +227,24 @@
                        (cons (unit-lcode (repl-lower-form* env (expand-unit-form f macro-env known) #f) name)
                              acc))
                      (quote ()) defs))]
-          [export-table (map (lambda (e) (cons e (mangle name e))) exports)])
+          ;; export table keys on the EXTERNAL name; the symbol is the INTERNAL name
+          ;; mangled to this unit (rename is pure indirection).
+          [export-table (map (lambda (e) (cons (car e) (mangle name (cdr e)))) exports)])
       (list (emit-library-batch progs name) (list name export-table)))))
 
 ;; Compile a program that imports libraries.  import-tables is a list of the
-;; imported libraries' export tables (as returned by compile-library); the
-;; program resolves imported free identifiers to the exporter's external globals
-;; and its @scheme_entry runs each imported library's __init first.  Returns IR.
-(define (compile-program-with-imports prelude-forms user-forms import-tables dump)
+;; program's DIRECT imports' export tables (as returned by compile-library); the
+;; program resolves imported free identifiers to the exporter's external globals.
+;; init-libs is the WHOLE transitive import closure in dependency (topological)
+;; order (change: module-generalize) -- the units whose one-shot __init the
+;; program's @scheme_entry runs, deepest dependency first, before the body.  When
+;; init-libs is #f the program's direct imports are used (single-stage callers).
+;; Returns IR text.
+(define (compile-program-with-imports prelude-forms user-forms import-tables init-libs dump)
   (let* ([imp+rt (collect-imports user-forms)]
          [imported-libs (car imp+rt)]
          [runtime-user (cadr imp+rt)]
-         [export-alist (apply append (map cadr import-tables))]      ; (ext . mangled-string)
-         [import-env-alist (map (lambda (p) (cons (car p) (string->symbol (cdr p)))) export-alist)]
+         [import-env-alist (import-tables->env-alist import-tables)] ; (ext . mangled-sym)
          [forms (with-prelude prelude-forms runtime-user)])
     (reset-counter!)
     (let* ([me+rf (collect-define-syntax forms)]
@@ -221,4 +262,4 @@
            [d (lower-program c program-unit)])
       (dump "collect-toplevel" top) (dump "expand" expd)
       (dump "parse+rename+imports" core) (dump "lower" d)
-      (emit-program-with-imports d imported-libs (map cdr import-env-alist)))))
+      (emit-program-with-imports d (or init-libs imported-libs) (map cdr import-env-alist)))))

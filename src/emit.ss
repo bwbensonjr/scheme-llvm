@@ -613,8 +613,19 @@
 ;; top-level symbol, named through `mangle` against the current emit unit (the
 ;; program/REPL unit is the empty prefix, so the operand is byte-identical).
 ;; Names are quoted so characters like ? ! - > are legal.
+;;
+;; An IMPORTED reference (change: module-generalize) already carries its exporter's
+;; fully unit-qualified symbol (`b:add1`, containing the unit separator `:`), so it
+;; must NOT be re-mangled against THIS unit -- else a library `(a)` referencing
+;; `(b)`'s export would emit `@"a:b:add1"`.  A `:` is the unit separator (mirrors
+;; label-has-colon? for code labels), so a symbol that already contains one is
+;; emitted verbatim.  A unit's own names never contain `:` (they are plain names or
+;; `x.gN` generations), so the program/single-unit cases stay byte-identical.
 (define (global-operand s)
-  (string-append "@\"" (mangle *emit-unit* s) "\""))
+  (let ([str (if (symbol? s) (symbol->string s) s)])
+    (if (label-has-colon? str)
+        (string-append "@\"" str "\"")                      ; imported: already qualified
+        (string-append "@\"" (mangle *emit-unit* s) "\"")))) ; own: qualify to this unit
 
 ;; Scan an L-code program for the persistent globals it defines (global-set!
 ;; targets) and references (global-ref / global-set! targets).
@@ -751,25 +762,31 @@
 ;; Module artifacts (change: module-artifacts-vertical-slice)
 ;; ============================================================================
 
-;; @scheme_entry for a program that imports libraries: call each imported
-;; library's one-shot @"L:__init" (declared external) before the program body, so
-;; every imported global is populated before first use (generalizes emit-entry).
-(define (emit-entry/inits entry imported-libs)
+;; @scheme_entry for a program that imports libraries: call each library's
+;; one-shot @"L:__init" (declared external) before the program body, so every
+;; imported global is populated before first use (generalizes emit-entry).
+;; `init-libs` is the WHOLE transitive import closure in dependency (topological)
+;; order (change: module-generalize) -- not just the direct imports -- so a
+;; transitively-imported library is initialized before the dependent that uses it.
+;; The one-shot @"L:__inited" guard makes a diamond's shared unit run once.
+(define (emit-entry/inits entry init-libs)
   (set! emit-lines '()) (set! current-bb "entry")
   (start-bb "entry")
   (for-each
     (lambda (lib) (emit! (string-append "call i64 @\"" (mangle lib "__init") "\"()")))
-    imported-libs)
+    init-libs)
   (et entry '() #f #f)
   (string-append "define i64 @scheme_entry() {\n" (lines->string (reverse emit-lines)) "}\n"))
 
 ;; A program module that imports libraries.  Like emit-program, but pins the
 ;; closure arity K to repl-arity (the shared cross-module closure ABI, matching
 ;; the libraries' own K), declares each imported global `external`, declares each
-;; imported library's __init, and runs those inits first in @scheme_entry.
-;;   imported-libs : list of library names (each a list of symbol parts)
-;;   imported-syms : list of mangled symbols the program references as externals
-(define (emit-program-with-imports prog imported-libs imported-syms)
+;; closure library's __init, and runs those inits first in @scheme_entry.
+;;   init-libs     : the transitive import closure in topological order (each a
+;;                   list of symbol parts) -- every unit whose __init to call/declare
+;;   imported-syms : mangled symbols the program references as externals (its DIRECT
+;;                   imports' exports; transitive exports are not visible to it)
+(define (emit-program-with-imports prog init-libs imported-syms)
   (reset-emit!)
   (set! *emit-unit* program-unit)          ; the program's own globals are unprefixed
   (match prog
@@ -777,14 +794,14 @@
      (set! *arity* repl-arity)
      (reset-symbols!)
      (let* ([body (apply string-append (map (lambda (d) (emit-code-def d *arity*)) defs))]
-            [ent  (emit-entry/inits entry imported-libs)]
+            [ent  (emit-entry/inits entry init-libs)]
             [gdecls (apply string-append
                       (map (lambda (s) (string-append (global-operand s) " = external global i64\n"))
                            imported-syms))]
             [idecls (apply string-append
                       (map (lambda (lib)
                              (string-append "declare i64 @\"" (mangle lib "__init") "\"()\n"))
-                           imported-libs))])
+                           init-libs))])
        (string-append (rt-declarations) gdecls idecls (symbol-globals)
                       body ent (emit-apply0-trampoline *arity*)))]))
 
@@ -800,10 +817,18 @@
   (set! *arity* repl-arity)
   (for-each repl-check-arity progs)
   (let ([qop (lambda (nm) (string-append "@\"" (mangle library-name nm) "\""))])  ; @-operand
-    (let loop ([ps progs] [n 1] [bodies '()] [thunks '()] [defd '()] [calls '()])
+    (let loop ([ps progs] [n 1] [bodies '()] [thunks '()] [defd '()] [refd '()] [calls '()])
       (if (null? ps)
+          ;; A transitively-imported global (change: module-generalize) is referenced
+          ;; but not defined by this unit; declare it `external` so it resolves at
+          ;; link/load time to the exporter.  For an import-free library `external`
+          ;; is empty, so the emitted bytes are unchanged (Stage 1 byte-identity).
           (let* ([flag    (qop "__inited")]
                  [flagdef (string-append flag " = global i64 0\n")]
+                 [external (diff refd defd)]
+                 [exts    (apply string-append
+                            (map (lambda (s) (string-append (global-operand s) " = external global i64\n"))
+                                 external))]
                  [slots   (apply string-append
                             (map (lambda (s) (string-append (global-operand s) " = global i64 0\n"))
                                  defd))]
@@ -819,13 +844,14 @@
                             "  store i64 8, ptr " flag "\n"
                             (apply string-append (reverse calls))
                             "  ret i64 2\n}\n")])
-            (string-append (rt-declarations) (symbol-globals) flagdef slots
+            (string-append (rt-declarations) (symbol-globals) exts flagdef slots
                            (apply string-append (reverse bodies))
                            (apply string-append (reverse thunks))
                            init (emit-apply0-trampoline repl-arity)))
           (let* ([prog (car ps)]
                  [fd+rd (repl-scan-globals prog)]
-                 [fd (car fd+rd)])
+                 [fd (car fd+rd)]
+                 [rd (cadr fd+rd)])
             (match prog
               [(program ,cdefs ,e)
                (let* ([body  (apply string-append
@@ -837,4 +863,4 @@
                       [call  (string-append "  call i64 @" tname "()\n")])
                  (loop (cdr ps) (+ n 1)
                        (cons body bodies) (cons thunk thunks)
-                       (union defd fd) (cons call calls)))]))))))
+                       (union defd fd) (union refd rd) (cons call calls)))]))))))

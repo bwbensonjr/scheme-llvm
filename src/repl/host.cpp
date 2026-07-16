@@ -40,6 +40,7 @@
 #include <sstream>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <memory>
 
 #include <gc/gc.h>
@@ -151,11 +152,16 @@ static std::string read_file(const std::string &path) {
 }
 
 // Preload every library named in the manifest into the shared JITDylib (change:
-// module-artifacts-vertical-slice).  The compiler owns manifest parsing: mode 5
-// turns the manifest text into a newline-separated list of source paths; for each
-// we read the file (host I/O) and hand it to mode 4, which compiles the unit and
-// returns (ok . (ir . init-symbol)).  We addIRModule the unit and run its one-shot
-// __init.  An interactive (import (L)) later just makes L's exports visible.
+// module-artifacts-vertical-slice; transitive imports: module-generalize).  The
+// compiler owns manifest parsing: mode 5 turns the manifest text into a
+// newline-separated list of source paths; for each we read the file (host I/O) and
+// hand it to mode 4, which compiles the unit and returns (ok . (ir . init-symbol)),
+// or (deferred . name) if a direct import is not loaded yet.  Because a library
+// resolves against the already-loaded units, dependencies must load before their
+// dependents; we therefore iterate to a FIXPOINT -- each pass loads whatever units
+// now have their imports satisfied -- so the load order is topological regardless
+// of manifest order.  A pass that makes no progress with libraries still deferred
+// means an import cycle or an import of a library missing from the manifest.
 static void preload_libraries() {
   const char *mp = std::getenv("EMIT_MANIFEST");
   std::string manifest = mp ? std::string(mp) : std::string("emit-libs.scm");
@@ -166,23 +172,43 @@ static void preload_libraries() {
   rt_repl_set(5, mtext.data(), (intptr_t)mtext.size());
   std::string paths = scm_str(scheme_entry());
 
+  std::vector<std::string> pending;
   std::istringstream lines(paths);
   std::string path;
-  while (std::getline(lines, path)) {
-    if (path.empty()) continue;
-    std::string src = read_file(path);
-    rt_repl_set(4, src.data(), (intptr_t)src.size());
-    intptr_t r = scheme_entry();
-    if (status_of(r) != "ok") {
-      std::cerr << "error: loading library " << path << ": " << scm_str(rt_cdr(r)) << "\n";
-      continue;
+  while (std::getline(lines, path))
+    if (!path.empty()) pending.push_back(path);
+
+  // Fixpoint: repeatedly try the still-pending libraries; keep the deferred ones
+  // for the next pass.  Stop when all load or a full pass makes no progress.
+  while (!pending.empty()) {
+    std::vector<std::string> deferred;
+    bool progress = false;
+    for (const std::string &p : pending) {
+      std::string src = read_file(p);
+      rt_repl_set(4, src.data(), (intptr_t)src.size());
+      intptr_t r = scheme_entry();
+      std::string st = status_of(r);
+      if (st == "deferred") { deferred.push_back(p); continue; }
+      if (st != "ok") {
+        std::cerr << "error: loading library " << p << ": " << scm_str(rt_cdr(r)) << "\n";
+        progress = true;                     // drop it; do not retry a hard error
+        continue;
+      }
+      intptr_t payload = rt_cdr(r);          // (ir . init-symbol)
+      std::string ir = scm_str(rt_car(payload));
+      std::string init = scm_str(rt_cdr(payload));
+      std::string err;
+      if (!add_ir(ir, err)) { std::cerr << "error: library add " << p << ": " << err << "\n"; }
+      else run_init(init);
+      progress = true;
     }
-    intptr_t payload = rt_cdr(r);            // (ir . init-symbol)
-    std::string ir = scm_str(rt_car(payload));
-    std::string init = scm_str(rt_cdr(payload));
-    std::string err;
-    if (!add_ir(ir, err)) { std::cerr << "error: library add " << path << ": " << err << "\n"; continue; }
-    run_init(init);
+    if (!progress) {                         // every remaining unit is stuck
+      for (const std::string &p : deferred)
+        std::cerr << "error: library " << p
+                  << ": unresolved or cyclic import (dependency missing from manifest?)\n";
+      break;
+    }
+    pending.swap(deferred);
   }
 }
 
