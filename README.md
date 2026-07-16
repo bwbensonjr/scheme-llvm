@@ -226,7 +226,10 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   and `` ` ``/`,`/`,@` quasiquote sugar, `;` comments).
 
 **Backends & process**
-- AOT / JIT / bitcode from one emitted `.ll`, with a 3-way equivalence harness.
+- AOT / JIT / bitcode from the same emitted modular artifact set (program + its linked
+  libraries, including the auto-imported `(scheme base)`), with a 3-way equivalence harness. All
+  three backends re-home the prelude and resolve `import`s identically — one compilation path.
+  (`--emit-ir` is the exception: a single-module raw core-IR filter for piping/self-hosting.)
 - **In-process embedded run** (`build/scheme-run`, Path A — mechanism): the compiled
   compiler is linked into a JIT host (`src/run.cpp`); its ccc `scheme_entry` reads the
   program, returns the emitted IR as a string, and the host JITs and runs it — a whole

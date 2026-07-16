@@ -1,15 +1,4 @@
-# backends Specification
-
-## Purpose
-
-Defines the "one frontend, many backends" property: the same emitted modular artifact set
-(the program module plus its linked libraries, including the auto-imported `(scheme base)`)
-drives three interchangeable whole-program exits — a native executable (AOT), in-process
-batch JIT execution via `lli`, and a bitcode artifact — the requirement that the three
-produce identical results (verified by a standing regression harness), and an additional
-interactive exit that adds per-form modules to a persistent LLVM ORC/LLJIT host.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: One emitted IR drives AOT, JIT, and bitcode exits
 
@@ -59,16 +48,3 @@ and a batch build SHALL produce the same value for the same sequence of forms.
   ORC/LLJIT REPL, and the same sequence is compiled and run as a single whole-program
   batch build
 - **THEN** the value reported for the final form is identical between the two exits
-
-### Requirement: Backends produce identical results (regression harness)
-
-The project SHALL provide a regression harness that runs every demo through all three
-backends and asserts identical results, operationalizing the "one frontend, many
-backends" thesis as a standing check.
-
-#### Scenario: Cross-backend equivalence across the demo suite
-
-- **WHEN** the backend regression harness is run over the demo suite (including the
-  allocation-heavy and 10M-iteration tail-recursion demos)
-- **THEN** for each demo the AOT, JIT, and bitcode backends produce byte-identical
-  standard output, and the harness fails if any backend diverges or errors

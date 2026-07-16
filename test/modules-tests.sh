@@ -155,6 +155,33 @@ else
   echo "  [FAIL] recompile-changed  (expected chain-b recompile, chain-a reuse)"; sed 's/^/         /' "$TMP/sr3.build"; fail=$((fail+1))
 fi
 
+echo "cross-backend module build (jit/bitcode re-home; change: driver-backend-rehome)"
+# The re-home is backend-independent: jit and bitcode resolve (import ...) and the
+# auto-imported (scheme base) exactly as aot, and agree on the value.  (Before this
+# change jit/bitcode prepended the prelude and died on `import`.)
+check_backend () {  # <name> <src> <backend> <expected>
+  local name="$1" src="$2" backend="$3" want="$4"
+  if [ "$backend" = jit ]; then
+    local got; got="$(timeout 60 chez --libdirs src --script src/compile.ss "$src" \
+      --backend jit --manifest "$MAN" -o "$TMP/$name" -q 2>"$TMP/$name.err")"
+    if [ "$got" = "$want" ]; then echo "  [OK  ] $name => $got"; pass=$((pass+1))
+    else echo "  [FAIL] $name => ${got:-<none>}  (expected $want)"; sed 's/^/         /' "$TMP/$name.err"; fail=$((fail+1)); fi
+  else
+    if ! chez --libdirs src --script src/compile.ss "$src" --backend "$backend" --manifest "$MAN" \
+         -o "$TMP/$name" -q >"$TMP/$name.err" 2>&1; then
+      echo "  [FAIL] $name  (build error)"; sed 's/^/         /' "$TMP/$name.err"; fail=$((fail+1)); return
+    fi
+    local got; got="$(timeout 60 "$TMP/$name" 2>/dev/null)"
+    if [ "$got" = "$want" ]; then echo "  [OK  ] $name => $got"; pass=$((pass+1))
+    else echo "  [FAIL] $name => ${got:-<none>}  (expected $want)"; fail=$((fail+1)); fi
+  fi
+}
+printf '(map (lambda (x) (* x x)) (list 1 2 3))' > "$TMP/be-prelude.scm"
+check_backend be-prelude-jit "$TMP/be-prelude.scm" jit     "(1 4 9)"   # (scheme base) via jit
+check_backend be-prelude-bc  "$TMP/be-prelude.scm" bitcode "(1 4 9)"   # (scheme base) via bitcode
+check_backend be-import-jit  "$MOD/prog-mylib.scm" jit     142         # (import (mylib)) via jit
+check_backend be-import-bc   "$MOD/prog-mylib.scm" bitcode 142         # (import (mylib)) via bitcode
+
 echo "dev->ship fidelity (cross-door byte-identity)"
 # The library unit emitted for the AOT door (chez compile.ss, above) must be
 # byte-identical to the one the embedded compiler emits for the REPL door.

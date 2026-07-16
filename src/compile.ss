@@ -340,7 +340,14 @@
 ;; compiles the program against its DIRECT imports, and links runtime + every unit
 ;; in the closure + the program.  The program's @scheme_entry runs the whole
 ;; closure's __init in dependency order (change: module-generalize).
-(define (build-modular-program src exe prelude?)
+;; Build the modular artifact SET without linking (change: driver-backend-rehome):
+;; resolve the transitive import closure (incl. the auto-imported (scheme base)
+;; when the prelude is enabled), build/reuse each unit .ll (with the host header),
+;; compile the program .ll against its direct imports, and RETURN the ordered unit
+;; .ll list (topological/link order) plus the program .ll.  The three backends
+;; (aot/jit/bitcode) each consume this same set, so re-home + import resolution is
+;; one path, not per-backend.
+(define (build-modular-artifacts src out prelude?)
   (let* ([user-forms     (read-program src)]
          ;; Stage 3: the prelude's procedures come from the auto-imported (scheme
          ;; base) library, not a prepend; only its derived-form macros are merged
@@ -357,19 +364,13 @@
             ;; every unit ready: compile the program against its DIRECT imports'
             ;; tables, ordering the whole closure's inits by topo order.
             (let* ([direct-tables (map (lambda (n) (cdr (assoc n tables))) direct-imports)]
-                   [prog-ll   (string-append exe ".ll")]      ; beside the exe, not the source
+                   [prog-ll   (string-append out ".ll")]      ; beside the exe, not the source
                    [prog-ir   (compile-program-with-imports
                                 prelude-forms user-forms direct-tables order no-dump)]
                    [prog-text (string-append header prog-ir)])
               (write-text prog-ll prog-text)
               (note "compile ~a -> ~a  [~a bytes]\n" src prog-ll (string-length prog-text))
-              (let ([cmd (string-append
-                           "clang -Wno-override-module -I" gc-inc " -L" gc-lib " " runtime-c " "
-                           (apply string-append (map (lambda (l) (string-append l " ")) (reverse lls)))
-                           prog-ll " -lgc -o " exe)])
-                (sh "clang" cmd)
-                (note "link ~a + ~a unit(s) -> ~a  [aot, modules]\n"
-                      prog-ll (length lls) exe)))
+              (values (reverse lls) prog-ll))           ; unit .ll's in link order + program .ll
             ;; build or reuse one library
             (let* ([name    (car libs)]
                    [entry   (manifest-lookup manifest name)]
@@ -395,6 +396,47 @@
                     (note "compile ~s -> ~a  [~a bytes]\n" name ll (string-length ll-text))
                     (loop (cdr libs) (cons (cons name (cadr res)) tables) (cons ll lls))))))))))
 
+;; --- modular-set backend consumers (change: driver-backend-rehome) ---------
+;; Each takes the unit .ll's (link order) + the program .ll and drives one exit.
+(define (lls->string lls) (apply string-append (map (lambda (l) (string-append l " ")) lls)))
+
+;; AOT: clang links runtime + every unit + program -> native exe.
+(define (link-modular-aot unit-lls prog-ll exe)
+  (sh "clang"
+      (string-append "clang -Wno-override-module -I" gc-inc " -L" gc-lib " " runtime-c " "
+                     (lls->string unit-lls) prog-ll " -lgc -o " exe))
+  (note "link ~a + ~a unit(s) -> ~a  [aot, modules]\n" prog-ll (length unit-lls) exe))
+
+;; assemble each .ll in the set to a sibling .bc; return the .bc paths in order.
+(define (assemble-set lls)
+  (map (lambda (ll)
+         (let ([bc (string-append ll ".bc")])
+           (sh "llvm-as" (string-append (tool "llvm-as") " " ll " -o " bc))
+           bc))
+       lls))
+
+;; JIT: assemble the whole set + the runtime to bitcode, llvm-link them into one
+;; module (so the units' scheme.base:* globals, the program, and rt_* / C main all
+;; join), and run in-process via lli with libgc loaded.
+(define (run-jit-modular unit-lls prog-ll base)
+  (let* ([rbc (string-append base ".rt.bc")]
+         [cbc (string-append base ".combined.bc")]
+         [bcs (assemble-set (append unit-lls (list prog-ll)))])
+    (sh "clang-emit" (string-append (tool "clang") " -I" gc-inc " -emit-llvm -c " runtime-c " -o " rbc))
+    (sh "llvm-link"  (string-append (tool "llvm-link") " " (lls->string bcs) rbc " -o " cbc))
+    (sh "lli"        (string-append (tool "lli") " -load=" gc-dylib " " cbc))))
+
+;; Bitcode: llvm-link the whole set into one program .bc (the inspectable/opt-able
+;; artifact), then codegen that .bc + runtime to a native exe.
+(define (build-bitcode-modular unit-lls prog-ll exe base)
+  (let* ([bc  (string-append base ".bc")]
+         [bcs (assemble-set (append unit-lls (list prog-ll)))])
+    (sh "llvm-link" (string-append (tool "llvm-link") " " (lls->string bcs) "-o " bc))
+    (sh "clang(bc)"
+        (string-append (tool "clang") " -Wno-override-module -I" gc-inc " -L" gc-lib " "
+                       runtime-c " " bc " -lgc -o " exe))
+    (note "link ~a + ~a unit(s) -> ~a -> ~a  [bitcode, modules]\n" prog-ll (length unit-lls) bc exe)))
+
 ;; --- argument handling ---
 ;; `via?` (env SCHEMEC=<path> or --via-schemec) routes the batch forms->IR step
 ;; through the compiled `schemec` (path C, D4) instead of the in-process core.
@@ -412,14 +454,23 @@
                  ;; --dump = full per-pass form trace; -v = concise stage names; else silent
                  [dumpf (cond [dump? dump] [(>= driver-verbosity 2) announce-stage] [else no-dump])])
             (cond
-              ;; import-aware AOT: a program that imports libraries -- or, with the
-              ;; prelude enabled, any program (it auto-imports (scheme base), Stage 3)
-              ;; -- is built by compiling+linking its libraries (changes:
-              ;; module-artifacts-vertical-slice, module-prelude-scheme-base).
-              [(and (string=? backend "aot")
-                    (or prelude? (pair? (program-imports src))))
-               (build-modular-program src out prelude?)]
+              ;; Module-aware path for ALL backends (change: driver-backend-rehome):
+              ;; a program that imports libraries -- or, with the prelude enabled, any
+              ;; program (it auto-imports (scheme base), Stage 3) -- resolves its
+              ;; libraries once into the modular artifact set, which aot/jit/bitcode
+              ;; each consume.  This is what re-homes jit/bitcode (no prelude prepend,
+              ;; and they now handle imports) (changes: module-artifacts-vertical-slice,
+              ;; module-prelude-scheme-base, driver-backend-rehome).
+              [(or prelude? (pair? (program-imports src)))
+               (let-values ([(unit-lls prog-ll) (build-modular-artifacts src out prelude?)])
+                 (case (string->symbol backend)
+                   [(aot) (link-modular-aot unit-lls prog-ll out)]
+                   [(bitcode) (require-llvm-tools) (build-bitcode-modular unit-lls prog-ll out out)]
+                   [(jit) (require-llvm-tools) (run-jit-modular unit-lls prog-ll out)]
+                   [else (error 'compile "unknown backend (want aot|jit|bitcode)" backend)]))]
               [else
+            ;; --no-prelude + no imports: a single self-contained module (no (scheme
+            ;; base)), driven to any backend as before.
             (compile-file src ll dumpf prelude? via?)
             (case (string->symbol backend)
               [(aot)
