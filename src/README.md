@@ -64,7 +64,7 @@ heap objects carry no header word. All 8 tags are assigned:
 | tag | value | kind    | representation |
 |-----|-------|---------|----------------|
 | 000 | 0 | fixnum  | immediate, payload = `n << 3` (signed) |
-| 001 | 1 | boolean | immediate, `#f` = 1, `#t` = 9 |
+| 001 | 1 / 257 | misc-imm | immediate family; a 5-bit subtype (bits 3–7) selects boolean (`#f` = 1, `#t` = 257) or character (payload bits 8+ = Unicode codepoint) |
 | 010 | 2 | nil     | immediate, `()` = 2 |
 | 011 | 3 | pair    | heap `{car, cdr}` |
 | 100 | 4 | closure | heap `{code_ptr, free0, ...}`, called indirectly |
@@ -78,7 +78,6 @@ discriminated by a header code in their first word:
 | header code | kind      | layout |
 |-------------|-----------|--------|
 | 0 (`HDR_STRING`) | string    | `{hdr, byte-length, char *bytes}` — UTF-8, explicit length |
-| 1 (`HDR_CHAR`)   | character | `{hdr, codepoint}` — full Unicode scalar value |
 | 2 (`HDR_VECTOR`) | vector    | `{hdr, length, elem0, …}` — mutable, fixed-length |
 
 ## Calling convention

@@ -188,7 +188,9 @@ read (host) → prepend prelude → collect-toplevel → expand → parse+rename
 
 Values are tagged 64-bit words. All 8 tags are assigned: fixnum, boolean, nil, pair,
 closure, box, symbol (interned), and an extended/header-word object (tag 7) hosting strings
-(UTF-8) and characters (Unicode codepoints). Every Scheme function shares one `tailcc`
+(UTF-8). The boolean tag `001` is a misc-immediate family (a 5-bit subtype selects boolean
+vs. character vs. reserved singletons), so characters are **immediate** words carrying their
+Unicode codepoint — no heap object, no interning. Every Scheme function shares one `tailcc`
 prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `musttail`
 (bounded stack verified at 10M iterations).
 
@@ -214,8 +216,10 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   to `cons`/`append`/`list`/`quote`.
 
 **Data & runtime**
-- Fixnums, booleans, `()`, pairs, closures, boxes; **interned symbols and characters**
-  (`eq?` / `eqv?` by identity); **strings and characters** that are Unicode-capable (UTF-8
+- Fixnums, booleans, `()`, pairs, closures, boxes; **interned symbols** (`eq?` / `eqv?` by
+  identity) and **immediate characters** (the codepoint encoded in the tagged word, so equal
+  codepoints are the same word — `eq?` / `eqv?` hold with no heap object or intern table);
+  **strings** that are Unicode-capable (UTF-8
   storage, codepoint-indexed operations, in-place `string-set!`); **vectors** (mutable,
   fixed-length, `#(...)` syntax).
 - Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? equal? not char->integer

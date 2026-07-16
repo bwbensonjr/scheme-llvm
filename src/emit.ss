@@ -115,9 +115,11 @@
 (define (encode-const d)
   (cond
     [(and (integer? d) (exact? d)) (number->string (* d 8))]  ; fixnum: n<<3
-    [(eq? d #t) "9"]                                          ; TRUE_V
-    [(eq? d #f) "1"]                                          ; FALSE_V
+    [(eq? d #t) "257"]                                        ; TRUE_V  (subtype BOOL, payload 1)
+    [(eq? d #f) "1"]                                          ; FALSE_V (subtype BOOL, payload 0)
     [(null? d) "2"]                                           ; NIL_V
+    [(char? d)                                                ; immediate char: (cp<<8)|(SUB_CHAR<<3)|TAG_BOOL
+     (number->string (+ (* (char->integer d) 256) 9))]
     [(symbol? d)
      (let ([g (symbol-global (symbol->string d))] [t (fresh-temp)])
        (emit! (string-append t " = call i64 @rt_intern(ptr " g ")"))
@@ -129,11 +131,6 @@
          (emit! (string-append t " = call i64 @rt_make_string(ptr " g ", i64 "
                                (number->string len) ")"))
          t))]
-    [(char? d)                                                ; Unicode codepoint
-     (let ([t (fresh-temp)])
-       (emit! (string-append t " = call i64 @rt_make_char(i64 "
-                             (number->string (char->integer d)) ")"))
-       t)]
     [(pair? d)                                                ; materialize at runtime
      (let* ([a  (encode-const (car d))]
             [dd (encode-const (cdr d))]
@@ -490,7 +487,6 @@
    "declare i64 @rt_not(i64)\n"
    "declare i64 @rt_intern(ptr)\n"
    "declare i64 @rt_make_string(ptr, i64)\n"
-   "declare i64 @rt_make_char(i64)\n"
    "declare i64 @rt_char_to_integer(i64)\n"
    "declare i64 @rt_integer_to_char(i64)\n"
    "declare i64 @rt_string_length(i64)\n"

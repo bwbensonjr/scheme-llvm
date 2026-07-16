@@ -14,7 +14,7 @@ speed items in this list.
 | ID | Item | Kind | Value | Cost | OpenSpec change | Done |
 |----|------|------|-------|------|-----------------|------|
 | [P1](#p1-dead-code-elimination-for-library-units) | Dead-code elimination for library units | size | high | med | — | ☐ |
-| [P2](#p2-immediate-non-heap-characters) | Immediate (non-heap) characters | speed + cleanup | med | med | — | ☐ |
+| [P2](#p2-immediate-non-heap-characters) | Immediate (non-heap) characters | speed + cleanup | med | med | `immediate-characters` | ☑ |
 | [P3](#p3-precompiled-prelude--library-objects) | Precompiled prelude / library objects | build speed | low | low | — | ☐ |
 | [P4](#p4-on-codepoint-string-indexing) | O(n) codepoint string indexing | speed | low–med | med–high | — | ☐ |
 
@@ -71,7 +71,7 @@ in the change's design before implementing.
 
 ## P2 — Immediate (non-heap) characters
 
-**Status:** ☐ not started
+**Status:** ☑ done (change: `immediate-characters`)
 
 **Symptom.** Every character is a heap allocation. `string-ref`, the reader, and
 `integer->char` all call `rt_make_char`, which allocates a 2-word object (or interns) per
@@ -106,7 +106,11 @@ places must agree: `src/runtime/runtime.c` (tag/predicate/`make_char`/`eq` logic
 `src/emit.ss` (inline tag checks + char-literal emission), and the value printer. Bounded and
 highly testable; deletes the intern machinery on the way through (cleanup + speed together).
 
-**OpenSpec change:** _none yet._
+**OpenSpec change:** `immediate-characters` (implemented). The boolean tag `001` became a
+misc-immediate family with a 5-bit subtype: subtype 0 = boolean (`#f`=1, `#t`=257), subtype 1
+= character (codepoint in bits 8+), subtypes 2/3 reserved for `eof-object`/unspecified. The
+Latin-1 + astral intern tables and the `HDR_CHAR` heap layout were removed; character
+literals now emit an inline immediate constant instead of an `rt_make_char` call.
 
 ---
 

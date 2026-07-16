@@ -202,12 +202,14 @@ change to the runtime calling convention.
 
 ### Requirement: Character interning
 
-Characters SHALL be interned by Unicode scalar value: two characters with the same
-codepoint SHALL be the same object, regardless of how each was constructed (a `#\c`
-literal, `(integer->char n)`, or `(string-ref s i)`). Consequently `eq?` and `eqv?` SHALL
-return `#t` for characters with equal codepoints and `#f` for characters with different
-codepoints. Interned characters SHALL survive garbage collection under both the AOT and JIT
-backends.
+Characters SHALL be **immediate** tagged values: the Unicode scalar value is encoded
+directly in the tagged word, with no heap allocation and no intern table. Because equal
+codepoints produce the identical immediate word, two characters with the same codepoint
+SHALL be the same value regardless of how each was constructed (a `#\c` literal,
+`(integer->char n)`, or `(string-ref s i)`). Consequently `eq?` and `eqv?` SHALL return
+`#t` for characters with equal codepoints and `#f` for characters with different codepoints.
+As immediates, characters are trivially GC-safe (they are never heap objects) under both the
+AOT and JIT backends.
 
 #### Scenario: Equal characters are identical
 
@@ -229,8 +231,8 @@ backends.
 
 The compiler SHALL provide `eqv?` as a reserved primitive that returns `#t` when its two
 arguments are the same object, and `#f` otherwise. In the current subset `eqv?` SHALL agree
-with `eq?`: it holds for fixnums (immediate), interned symbols, and interned characters
-(equal codepoints are the same object). Value comparison for non-immediate numbers
+with `eq?`: it holds for fixnums (immediate), interned symbols, and immediate characters
+(equal codepoints are the same immediate word). Value comparison for non-immediate numbers
 (flonums, bignums) — where `eqv?` would diverge from `eq?` — is deferred until such numbers
 exist.
 

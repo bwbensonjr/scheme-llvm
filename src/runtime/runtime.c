@@ -5,7 +5,10 @@
  * encoded in its pointer tag, so heap objects carry no header word.
  *
  *   tag 000  fixnum    immediate, payload = word >> 3 (signed)
- *   tag 001  boolean   immediate, #f = 0b001 (1), #t = 0b1001 (9)
+ *   tag 001  misc-imm  immediate family; bits 3-7 = subtype, bits 8+ = payload:
+ *                        subtype 0 boolean  (#f = 1, #t = 257)
+ *                        subtype 1 char     (payload = Unicode codepoint)
+ *                        subtypes 2,3,... reserved (eof-object, unspecified, ...)
  *   tag 010  nil       immediate, the empty list (only value 0b010 = 2)
  *   tag 011  pair      pointer, heap {car, cdr}
  *   tag 100  closure   pointer, heap {code_ptr, free0, ...}
@@ -44,21 +47,35 @@ char rt_trap_msg[128] = "";
 #define TAG_SYMBOL  6
 #define TAG_EXT     7   /* extended heap object; first word = a header code */
 
+/* Tag 001 (TAG_BOOL) is a misc-immediate FAMILY: bits 3-7 hold a 5-bit subtype,
+ * bits 8+ the payload.  Booleans and characters are both immediates in this
+ * family; further singletons (eof-object, the unspecified value) can take new
+ * subtypes without needing a new primary tag. */
+#define SUB_BOOL    0
+#define SUB_CHAR    1
+
 /* header codes for TAG_EXT objects (tags 0-6 are exhausted, so new heap types
  * live under tag 7 and are discriminated by this header word) */
 #define HDR_STRING  0
-#define HDR_CHAR    1
 #define HDR_VECTOR  2   /* { HDR_VECTOR, length, elem0, ... } */
 #define HDR_ERROR   3   /* { HDR_ERROR, message-string, irritants-list } (R7RS error obj) */
 
 #define FIX(n)     ((val)(((intptr_t)(n)) << 3))
 #define UNFIX(v)   (((intptr_t)(v)) >> 3)
-#define FALSE_V    ((val)TAG_BOOL)             /* 1 */
-#define TRUE_V     ((val)((1 << 3) | TAG_BOOL))/* 9 */
-#define NIL_V      ((val)TAG_NIL)              /* 2 */
+#define FALSE_V    ((val)TAG_BOOL)                     /* 1   (subtype BOOL, payload 0) */
+#define TRUE_V     ((val)((1 << 8) | TAG_BOOL))        /* 257 (subtype BOOL, payload 1) */
+#define NIL_V      ((val)TAG_NIL)                       /* 2 */
 #define tag_of(v)  (((intptr_t)(v)) & TAG_MASK)
 #define as_ptr(v)  ((val *)(((intptr_t)(v)) & ~(intptr_t)TAG_MASK))
 #define tag_ptr(p, t) ((val)(((intptr_t)(p)) | (t)))
+
+/* misc-immediate subtype accessor, plus the char immediate: payload = codepoint
+ * in bits 8+, subtype SUB_CHAR in bits 3-7, primary tag TAG_BOOL in bits 0-2. */
+#define imm_subtype(v) ((((intptr_t)(v)) >> 3) & 0x1F)
+#define MK_CHAR(cp)    ((val)((((intptr_t)(cp)) << 8) | (SUB_CHAR << 3) | TAG_BOOL))
+#define CHAR_CP(v)     (((intptr_t)(v)) >> 8)
+#define is_bool(v)     (tag_of(v) == TAG_BOOL && imm_subtype(v) == SUB_BOOL)
+#define is_char(v)     (tag_of(v) == TAG_BOOL && imm_subtype(v) == SUB_CHAR)
 
 static inline val truthy(int b) { return b ? TRUE_V : FALSE_V; }
 
@@ -113,9 +130,10 @@ val rt_null_p(val v)       { return truthy(v == NIL_V); }
 val rt_pair_p(val v)       { return truthy(tag_of(v) == TAG_PAIR); }
 val rt_eq_p(val a, val b)  { return truthy(a == b); }
 /* eqv?: same-object identity.  == suffices because every value eqv? can
- * distinguish is immediate (fixnums), interned (symbols), or interned by
- * codepoint (characters, see rt_make_char); this diverges from rt_eq_p only
- * once non-immediate numbers (flonums/bignums) need value comparison. */
+ * distinguish is immediate (fixnums, booleans, characters -- equal codepoints
+ * are the same immediate word) or interned (symbols); this diverges from
+ * rt_eq_p only once non-immediate numbers (flonums/bignums) need value
+ * comparison. */
 val rt_eqv_p(val a, val b) { return truthy(a == b); }
 val rt_not(val x)          { return truthy(x == FALSE_V); }  /* only #f is false */
 
@@ -227,54 +245,11 @@ static const char *str_bytes(val v) { return (const char *)as_ptr(v)[2]; }
 intptr_t    rt_string_len(val v)   { return str_len(v); }
 const char *rt_string_bytes(val v) { return str_bytes(v); }
 
-/* char: { HDR_CHAR, codepoint } -- the full Unicode scalar value */
-static intptr_t char_cp(val v) { return as_ptr(v)[1]; }
-
-/* Characters are interned by codepoint so equal chars are the same object
- * (eq?/eqv? hold), mirroring symbol interning.  Two tiers: a direct Latin-1
- * array for 0..255 (the common case, O(1)) and a growable linear-scan table for
- * codepoints >= 256.  Both are GC_MALLOC_UNCOLLECTABLE and scanned, so interned
- * chars are roots that survive collection under the lli JIT (see rt_intern for
- * why a plain static pointer is not enough). */
-static val *char_latin1 = NULL;          /* [256], lazily allocated, zero = absent */
-static val *char_astral = NULL;          /* codepoints >= 256 */
-static intptr_t char_astral_count = 0;
-static intptr_t char_astral_cap = 0;
-
-static val char_lookup(intptr_t cp) {
-  if (cp < 256) return char_latin1 ? char_latin1[cp] : 0;
-  for (intptr_t i = 0; i < char_astral_count; i++)
-    if (char_cp(char_astral[i]) == cp) return char_astral[i];
-  return 0;
-}
-
-static void char_intern_add(val ch, intptr_t cp) {
-  if (cp < 256) {
-    if (!char_latin1)
-      char_latin1 = (val *)GC_MALLOC_UNCOLLECTABLE(256 * sizeof(val));
-    char_latin1[cp] = ch;
-    return;
-  }
-  if (char_astral_count == char_astral_cap) {
-    intptr_t ncap = char_astral_cap ? char_astral_cap * 2 : 16;
-    val *nt = (val *)GC_MALLOC_UNCOLLECTABLE((size_t)ncap * sizeof(val));
-    for (intptr_t i = 0; i < char_astral_count; i++) nt[i] = char_astral[i];
-    if (char_astral) GC_free(char_astral);
-    char_astral = nt;
-    char_astral_cap = ncap;
-  }
-  char_astral[char_astral_count++] = ch;
-}
-
-val rt_make_char(intptr_t codepoint) {
-  val c = char_lookup(codepoint);
-  if (c) return c;                          /* canonical char already interned */
-  val *p = (val *)GC_MALLOC(2 * sizeof(val));
-  p[0] = HDR_CHAR; p[1] = codepoint;
-  val ch = tag_ptr(p, TAG_EXT);
-  char_intern_add(ch, codepoint);
-  return ch;
-}
+/* char: an immediate in the misc-immediate family (subtype SUB_CHAR), the full
+ * Unicode scalar value carried in bits 8+.  No heap allocation and no interning
+ * -- equal codepoints ARE the same word, so eq?/eqv? hold intrinsically.  The
+ * name/signature is kept so rt_string_ref and rt_integer_to_char still call it. */
+val rt_make_char(intptr_t codepoint) { return MK_CHAR(codepoint); }
 
 /* encode a Unicode codepoint as UTF-8 into buf (>= 4 bytes); return byte count */
 static int utf8_encode(intptr_t cp, unsigned char *buf) {
@@ -325,7 +300,7 @@ static intptr_t utf8_offset(const unsigned char *s, intptr_t blen, intptr_t cp) 
 }
 
 /* --- character operations ---------------------------------------------- */
-val rt_char_to_integer(val c) { return FIX(char_cp(c)); }
+val rt_char_to_integer(val c) { return FIX(CHAR_CP(c)); }
 val rt_integer_to_char(val n) { return rt_make_char(UNFIX(n)); }
 
 /* --- string operations (codepoint-indexed over UTF-8 storage, design D1) --- */
@@ -377,14 +352,14 @@ val rt_list_to_string(val lst) {
   char *buf = (char *)GC_MALLOC_ATOMIC((size_t)(4 * n + 1));  /* <=4 bytes/codepoint */
   intptr_t off = 0;
   for (val cur = lst; tag_of(cur) == TAG_PAIR; cur = as_ptr(cur)[1])
-    off += utf8_encode(char_cp(as_ptr(cur)[0]), (unsigned char *)(buf + off));
+    off += utf8_encode(CHAR_CP(as_ptr(cur)[0]), (unsigned char *)(buf + off));
   return rt_make_string(buf, off);
 }
 /* a string of k copies of character ch. */
 val rt_make_string_fill(val k, val ch) {
   intptr_t n = UNFIX(k);
   unsigned char one[4];
-  int len1 = utf8_encode(char_cp(ch), one);
+  int len1 = utf8_encode(CHAR_CP(ch), one);
   char *buf = (char *)GC_MALLOC_ATOMIC((size_t)(len1 * n + 1));
   for (intptr_t i = 0; i < n; i++) memcpy(buf + i * len1, one, (size_t)len1);
   return rt_make_string(buf, len1 * n);
@@ -403,7 +378,7 @@ val rt_string_set(val s, val idx, val ch) {
   intptr_t so = utf8_offset(b, blen, UNFIX(idx));
   intptr_t eo = so + utf8_seq_len(b[so]);          /* byte range of the old codepoint */
   unsigned char enc[4];
-  int le = utf8_encode(char_cp(ch), enc);
+  int le = utf8_encode(CHAR_CP(ch), enc);
   intptr_t newlen = blen - (eo - so) + le;
   char *buf = (char *)GC_MALLOC_ATOMIC((size_t)newlen + 1);
   memcpy(buf, b, (size_t)so);                       /* prefix */
@@ -552,11 +527,11 @@ val rt_vector_p(val v) {
  * The subset has a single number type (fixnums), so integer? and exact? coincide;
  * they are kept as distinct names for forward compatibility. */
 val rt_symbol_p(val v)  { return truthy(tag_of(v) == TAG_SYMBOL); }
-val rt_boolean_p(val v) { return truthy(tag_of(v) == TAG_BOOL); }
+val rt_boolean_p(val v) { return truthy(is_bool(v)); }
 val rt_integer_p(val v) { return truthy(tag_of(v) == TAG_FIXNUM); }
 val rt_exact_p(val v)   { return truthy(tag_of(v) == TAG_FIXNUM); }
 val rt_string_p(val v)  { return truthy(tag_of(v) == TAG_EXT && ext_hdr(v) == HDR_STRING); }
-val rt_char_p(val v)    { return truthy(tag_of(v) == TAG_EXT && ext_hdr(v) == HDR_CHAR); }
+val rt_char_p(val v)    { return truthy(is_char(v)); }
 
 /* structural equality: eqv? fast path (immediates, interned symbols/chars, same
  * object), then recurse into pairs, compare string content by bytes (UTF-8, so
@@ -602,7 +577,15 @@ static void err_write(char *buf, size_t cap, size_t *off, val v) {
     case TAG_FIXNUM:
       err_put(buf, cap, off, tmp, (size_t)snprintf(tmp, sizeof tmp, "%ld", (long)UNFIX(v)));
       break;
-    case TAG_BOOL: err_put(buf, cap, off, v == FALSE_V ? "#f" : "#t", 2); break;
+    case TAG_BOOL:
+      if (is_char(v)) {                                  /* char shares tag 001 */
+        unsigned char cb[4]; int cn = utf8_encode(CHAR_CP(v), cb);
+        err_put(buf, cap, off, "#\\", 2);
+        err_put(buf, cap, off, (const char *)cb, (size_t)cn);
+      } else {
+        err_put(buf, cap, off, v == FALSE_V ? "#f" : "#t", 2);
+      }
+      break;
     case TAG_NIL:  err_put(buf, cap, off, "()", 2); break;
     case TAG_PAIR: {
       err_put(buf, cap, off, "(", 1);
@@ -713,7 +696,19 @@ val rt_error(val message, val irritants) {
 static void print_val(val v, int display) {
   switch (tag_of(v)) {
     case TAG_FIXNUM: printf("%ld", (long)UNFIX(v)); break;
-    case TAG_BOOL:   printf(v == FALSE_V ? "#f" : "#t"); break;
+    case TAG_BOOL:
+      if (is_char(v)) {                                  /* char shares tag 001 */
+        intptr_t cp = CHAR_CP(v);
+        unsigned char buf[4];
+        int n = utf8_encode(cp, buf);
+        if (display)          fwrite(buf, 1, (size_t)n, stdout);   /* the raw character */
+        else if (cp == ' ')   printf("#\\space");
+        else if (cp == '\n')  printf("#\\newline");
+        else { printf("#\\"); fwrite(buf, 1, (size_t)n, stdout); }
+      } else {
+        printf(v == FALSE_V ? "#f" : "#t");
+      }
+      break;
     case TAG_NIL:    printf("()"); break;
     case TAG_PAIR: {
       printf("(");
@@ -738,17 +733,6 @@ static void print_val(val v, int display) {
           fwrite(str_bytes(v), 1, (size_t)str_len(v), stdout);
           if (!display) putchar('"');
           break;
-        case HDR_CHAR: {
-          intptr_t cp = char_cp(v);
-          unsigned char buf[4];
-          int n = utf8_encode(cp, buf);
-          if (display) {
-            fwrite(buf, 1, (size_t)n, stdout);        /* the raw character */
-          } else if (cp == ' ')  printf("#\\space");
-          else if (cp == '\n')   printf("#\\newline");
-          else { printf("#\\"); fwrite(buf, 1, (size_t)n, stdout); }
-          break;
-        }
         case HDR_VECTOR: {
           intptr_t len = (intptr_t)as_ptr(v)[1];
           printf("#(");

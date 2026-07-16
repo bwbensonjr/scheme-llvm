@@ -150,17 +150,17 @@ pointer into the GC heap is *not* sufficient: under `lli`'s ORC JIT the module's
 segment is not a registered Boehm root, so the table array would be collected mid-run
 (caught by the `symbol-gc` demo across all three backends).
 
-**Strings and characters (tag 7, header-word).** A string is an extended object
-`{HDR_STRING, byte-length, char *bytes}` and a character is `{HDR_CHAR, codepoint}`.
-Both are **Unicode-capable**: a string stores UTF-8 bytes with an explicit byte length
-(so embedded NULs are fine), and a character holds the full Unicode scalar value.
-`rt_write` prints a string write-style between quotes (its bytes verbatim) and a character
-as `#\` followed by the codepoint UTF-8-encoded, with a small named-char set
-(`#\space`, `#\newline`). String literals reuse the symbol constant-emitter path: a private
-byte-array global (`@.str.lit.N`) plus a per-use `rt_make_string(ptr, len)`; character
-literals emit `rt_make_char(codepoint)`. Strings/chars are **not interned** — like quoted
-lists they carry no `eq?` identity (deferred with `eqv?` and the string/char operation
-library, which also owns the byte-vs-codepoint length/indexing decision). Strings are
+**Strings (tag 7, header-word) and characters (immediate).** A string is an extended object
+`{HDR_STRING, byte-length, char *bytes}` storing UTF-8 bytes with an explicit byte length
+(so embedded NULs are fine). A character is an **immediate**: the boolean tag `001` is a
+misc-immediate family, and subtype `SUB_CHAR` carries the full Unicode scalar value in the
+payload bits — no heap object, no interning, so equal codepoints are the same word and
+`eq?`/`eqv?` hold intrinsically. `rt_write` prints a string write-style between quotes (its
+bytes verbatim) and a character as `#\` followed by the codepoint UTF-8-encoded, with a small
+named-char set (`#\space`, `#\newline`). String literals reuse the symbol constant-emitter
+path: a private byte-array global (`@.str.lit.N`) plus a per-use `rt_make_string(ptr, len)`;
+character literals emit the immediate constant inline (`(codepoint << 8) | SUB_CHAR | tag`),
+no runtime call. Strings are
 **mutable**: `string-set!` (`rt_string_set`) splices the UTF-8 buffer for the new codepoint
 and rewrites the object's length/pointer words in place, so the identity is preserved and
 aliases observe the change (O(n) per set); `string-copy` gives an independent duplicate.
