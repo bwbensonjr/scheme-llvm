@@ -223,7 +223,8 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   storage, codepoint-indexed operations, in-place `string-set!`); **vectors** (mutable,
   fixed-length, `#(...)` syntax); **bytevectors** (mutable, fixed-length, packed bytes,
   `#u8(...)` syntax); **hash tables** (mutable, `equal?`-keyed, auto-growing — SRFI-69 subset
-  built on vectors + a `%hash` primitive).
+  built on vectors + a `%hash` primitive); **records** (R7RS `define-record-type` — disjoint
+  types, constructor/predicate/accessors/mutators, identity equality, opaque `#<record …>`).
 - Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? equal? not char->integer
   integer->char string-length string-ref substring string->symbol string=? string-append
   symbol->string list->string make-string string-set! string-copy make-bytevector
@@ -279,7 +280,6 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   R7RS exception system beyond the shipped subset — `with-exception-handler` and
   `raise-continuable` (their non-unwinding/resumable semantics need `call/cc`),
   `read-error?`/`file-error?`.
-- **Data**: records (vectors, bytevectors, and hash tables done).
 - **I/O**: ports, files, `read` from stdin, `write` as a procedure (`display` is
   supported — see above; `newline`/`write`/ports are not yet).
 - Recoverable error handling: `guard` catches in-language `raise`/`error` (see above), but

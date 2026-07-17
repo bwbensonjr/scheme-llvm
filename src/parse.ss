@@ -16,6 +16,7 @@
                   make-vector vector-ref vector-set! vector-length vector?
                   make-bytevector bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector?
                   %hash %make-hash-table %hash-table? %hash-table-spine
+                  %make-record-type %make-record %record-ref %record-set! %record-of-type? %record?
                   symbol? string? char? boolean? integer? exact?
                   read-all-stdin display %no-prelude?
                   repl-mode repl-input repl-state-ref repl-state-set!
@@ -144,6 +145,63 @@
        (list sig (car rest))]
       [else (error 'collect-toplevel "malformed define" f)])))
 
+;; ---- define-record-type (openspec records) ------------------------------
+;; A built-in definition form, recognized here alongside `define` (collect-toplevel
+;; runs before `expand`, so a form that introduces bindings must be lowered where
+;; top-level defines are understood -- not in the syntax-rules expander, which sees
+;; the program already folded into one letrec body).  It lowers to a list of
+;; (name init) binding pairs over the record primitives:
+;;   (define-record-type NAME (CTOR cf ...) PRED (fld ACC [MUT]) ...)
+;; ->
+;;   (<rtd> (%make-record-type "NAME"))                 ; fresh descriptor, once
+;;   (CTOR  (lambda (cf ...) (%make-record <rtd> (list <field0|()> ...))))
+;;   (PRED  (lambda (o) (%record-of-type? o <rtd>)))
+;;   (ACC   (lambda (o) (%record-ref o i)))             ; per field, i = body index
+;;   (MUT   (lambda (o v) (%record-set! o i v)))        ; per field with a mutator
+;; Field indices follow the body field-tag order; a constructor field not listed
+;; in the body order is left unspecified (R7RS allows a subset constructor).
+(define (record-type-form? f) (and (pair? f) (eq? (car f) 'define-record-type)))
+
+(define (record-field-bindings specs i)   ; ((fld ACC [MUT]) ...) -> (name init) pairs
+  (if (null? specs)
+      '()
+      (let* ([spec (car specs)]
+             [acc  (cadr spec)]
+             [has-mut (pair? (cddr spec))]        ; a third element => mutator name
+             [o    (fresh-name 'r)]
+             [v    (fresh-name 'v)]
+             [getter (list acc `(lambda (,o) (%record-ref ,o ,i)))]
+             [rest (record-field-bindings (cdr specs) (+ i 1))])
+        (if has-mut
+            (cons getter
+                  (cons (list (caddr spec) `(lambda (,o ,v) (%record-set! ,o ,i ,v)))
+                        rest))
+            (cons getter rest)))))
+
+(define (record-type-bindings f)
+  (let* ([tyname     (cadr f)]
+         [rest1      (cddr f)]
+         [ctor-spec  (car rest1)]              ; (CTOR cf ...)
+         [rest2      (cdr rest1)]
+         [pred       (car rest2)]
+         [field-specs (cdr rest2)]             ; ((fld ACC [MUT]) ...)
+         [ctor       (car ctor-spec)]
+         [ctor-fields (cdr ctor-spec)]
+         [field-names (map car field-specs)]
+         [rtd        (fresh-name 'rtd)]
+         [o          (fresh-name 'r)])
+    (cons
+      (list rtd `(%make-record-type ,(symbol->string tyname)))
+      (cons
+        (list ctor
+              `(lambda ,ctor-fields
+                 (%make-record ,rtd
+                   (list ,@(map (lambda (fn) (if (memq fn ctor-fields) fn '(quote ())))
+                                field-names)))))
+        (cons
+          (list pred `(lambda (,o) (%record-of-type? ,o ,rtd)))
+          (record-field-bindings field-specs 0))))))
+
 (define (seq-forms pre value)  ; non-final exprs + final -> one form
   (if (null? pre) value `(begin ,@pre ,value)))
 
@@ -162,12 +220,16 @@
 ;; SAME builder as the top level, but with R7RS body rules -- the defines must
 ;; form a prefix (no define after a body expression) and letrec* bindings are
 ;; visible across the whole run.  Returns a source form (re-parsed by parse-expr).
-(define (any-define? fs) (and (pair? fs) (or (define-form? (car fs)) (any-define? (cdr fs)))))
+(define (any-define? fs)
+  (and (pair? fs)
+       (or (define-form? (car fs)) (record-type-form? (car fs)) (any-define? (cdr fs)))))
 (define (build-body forms)
   (let loop ([fs forms] [binds '()])
     (cond
       [(and (pair? fs) (define-form? (car fs)))
        (loop (cdr fs) (cons (normalize-define (car fs)) binds))]
+      [(and (pair? fs) (record-type-form? (car fs)))
+       (loop (cdr fs) (append (reverse (record-type-bindings (car fs))) binds))]
       [(null? fs)
        (error 'parse "internal defines with no following body expression" forms)]
       [(any-define? fs)
@@ -186,6 +248,8 @@
               "program must end in an expression, not a definition")]
       [(define-form? (car fs))
        (loop (cdr fs) (cons (normalize-define (car fs)) binds) pre)]
+      [(record-type-form? (car fs))
+       (loop (cdr fs) (append (reverse (record-type-bindings (car fs))) binds) pre)]
       [(null? (cdr fs))                  ; final form = the program's value
        (build-program (reverse binds) (reverse pre) (car fs))]
       [else                              ; a non-final top-level expression
@@ -329,6 +393,18 @@
           (let ([sym (repl-env-define! env name)]) `(global-set! ,sym ,(prep init)))]
          [else
           (let ([init-il (prep init)]) `(global-set! ,(repl-env-define! env name) ,init-il))]))]
+    [(record-type-form? form)
+     ;; a define-record-type introduces several mutually-visible persistent
+     ;; globals (descriptor, constructor, predicate, accessors/mutators): register
+     ;; every name first (letrec* group), then emit a core-IL `seq` chain of
+     ;; group-load stores so the constructor lambda's descriptor reference resolves.
+     ;; (A raw `begin` would bypass parse-body's begin->seq desugaring, so build the
+     ;; seq chain directly over the already-prepped global-set! nodes.)
+     (let ([binds (record-type-bindings form)])
+       (for-each (lambda (b) (repl-env-define! env (car b))) binds)
+       (let loop ([bs binds])
+         (let ([node `(global-set! ,(repl-env-lookup env (car (car bs))) ,(prep (cadr (car bs))))])
+           (if (null? (cdr bs)) node `(seq ,node ,(loop (cdr bs)))))))]
     [else (prep form)]))
 
 (define (repl-lower-form env form) (repl-lower-form* env form #t))

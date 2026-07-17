@@ -197,6 +197,17 @@ bucket scan is the source of truth, so collisions are slow, never wrong). The ta
 (rehashes into ~2× buckets) past a load factor. `rt_write` prints the opaque `#<hash-table N>`
 (N = count); tables are not readable.
 
+**Records (tag 7, header-word).** `define-record-type` lowers (in the frontend, at
+`collect-toplevel` — before `expand`) to a fresh type descriptor plus a constructor, predicate,
+and per-field accessors/mutators over the record primitives. A record instance is
+`{HDR_RECORD, type-descriptor, field0, …}` (header code 5); the descriptor is a distinct object
+`{HDR_RECORD_TYPE, name-string}` (code 6) minted once per definition, so two records share a type
+iff their descriptors are the same object (`eq?`) — making types disjoint.
+`rt_make_record_type`/`rt_make_record`/`rt_record_ref`/`rt_record_set`/`rt_record_of_type_p`/`rt_record_p`
+are the primitives. `rt_write` prints the opaque `#<record TYPE>`; records are identity types
+(`eqv?`/`equal?` only on the same object, no field recursion — handled by `rt_equal`'s existing
+`a == b` fast path, so no record-specific arm is needed).
+
 **Quoted structure is materialized at runtime.** `(quote sym)` emits a private
 string-constant global (`@.str.sym.N = private … c"name\00"`) plus a per-use
 `rt_intern` call; `(quote (a . d))` emits `rt_cons` over the recursively encoded car/cdr,

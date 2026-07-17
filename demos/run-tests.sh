@@ -114,6 +114,8 @@ check vectors  demos/vectors.scm       '(20 4 99 #t #f #(1 2 3) #t #f 9)'  # vec
 check bytevectors demos/bytevectors.scm '(20 4 255 #t #f #u8(1 2 3) #t #f 9)'  # bytevector type + ops + printer + #u8(...) reader
 check hashtables demos/hash-tables.scm '(1 42 2 #f 100 #t #t #t #f #t)'  # hash-table set/ref/default/overwrite/delete/grow/predicate/%hash
 check hashprint demos/hash-print.scm   '#<hash-table 2>'  # opaque hash-table print
+check records   demos/records.scm      '(3 4 #t #f #f #t 9 #t #f)'  # define-record-type: ctor/pred/accessors/mutator/disjoint/identity
+check recordprint demos/record-print.scm '#<record point>'  # opaque record print
 
 echo "reader demos"
 check rdlist  demos/reader-list.scm    '(a (b c) 42)'         # read a nested list

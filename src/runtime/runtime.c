@@ -63,6 +63,10 @@ char rt_trap_msg[128] = "";
 #define HDR_ERROR      3   /* { HDR_ERROR, message-string, irritants-list } (R7RS error obj) */
 #define HDR_HASHTABLE  4   /* { HDR_HASHTABLE, spine-vector } -- opaque wrapper around a
                             * mutable spine #(count buckets _); ops live in the prelude */
+#define HDR_RECORD     5   /* { HDR_RECORD, type-descriptor, field0, ... } -- user record;
+                            * the descriptor (itself an ext obj) is the per-type identity token */
+#define HDR_RECORD_TYPE 6  /* { HDR_RECORD_TYPE, name-string } -- a record type descriptor;
+                            * object identity (eq?) distinguishes types, name is for printing */
 
 #define FIX(n)     ((val)(((intptr_t)(n)) << 3))
 #define UNFIX(v)   (((intptr_t)(v)) >> 3)
@@ -677,6 +681,37 @@ val rt_hash_table_p(val ht) {
   return truthy(tag_of(ht) == TAG_EXT && ext_hdr(ht) == HDR_HASHTABLE);
 }
 
+/* --- records (tag-7 HDR_RECORD: { HDR_RECORD, type-descriptor, field... }) ---
+ * define-record-type lowers (in the frontend) to calls on these primitives.  A
+ * type descriptor is a distinct heap object (HDR_RECORD_TYPE) minted once per
+ * definition; two records share a type iff their descriptors are the same object
+ * (eq?), which makes record types disjoint.  Records are identity types:
+ * eqv?/equal? hold only for the same object (no field recursion). */
+val rt_make_record_type(val name) {          /* name: a string value (for printing) */
+  val *p = (val *)GC_MALLOC(2 * sizeof(val));
+  p[0] = (val)HDR_RECORD_TYPE; p[1] = name;
+  return tag_ptr(p, TAG_EXT);
+}
+/* rt_make_record(td, fields): allocate { HDR_RECORD, td, field... } by walking
+ * the field list (a proper list of tagged values) into the slots in order. */
+val rt_make_record(val td, val fields) {
+  intptr_t n = 0;
+  for (val c = fields; tag_of(c) == TAG_PAIR; c = as_ptr(c)[1]) n++;
+  val *p = (val *)GC_MALLOC((size_t)(n + 2) * sizeof(val));
+  p[0] = (val)HDR_RECORD; p[1] = td;
+  intptr_t i = 0;
+  for (val c = fields; tag_of(c) == TAG_PAIR; c = as_ptr(c)[1]) p[i++ + 2] = as_ptr(c)[0];
+  return tag_ptr(p, TAG_EXT);
+}
+val rt_record_ref(val r, val i)        { return as_ptr(r)[2 + UNFIX(i)]; }
+val rt_record_set(val r, val i, val x) { as_ptr(r)[2 + UNFIX(i)] = x; return NIL_V; }
+val rt_record_of_type_p(val r, val td) {
+  return truthy(tag_of(r) == TAG_EXT && ext_hdr(r) == HDR_RECORD && as_ptr(r)[1] == td);
+}
+val rt_record_p(val r) {
+  return truthy(tag_of(r) == TAG_EXT && ext_hdr(r) == HDR_RECORD);
+}
+
 /* --- type predicates (self-hosting gap G9) -------------------------------- */
 /* Each returns #t/#f by inspecting the tag (and, for tag-7 heap objects, the
  * header code -- guard the ext_hdr deref behind the TAG_EXT check, as vector? does).
@@ -926,6 +961,20 @@ static void print_val(val v, int display) {
           val spine = as_ptr(v)[1];             /* #(count buckets _) */
           intptr_t count = UNFIX(as_ptr(spine)[2]);  /* vector elem 0 = count */
           printf("#<hash-table %ld>", (long)count);
+          break;
+        }
+        case HDR_RECORD: {
+          val td = as_ptr(v)[1], nm = as_ptr(td)[1];  /* descriptor -> name string */
+          printf("#<record ");
+          fwrite(str_bytes(nm), 1, (size_t)str_len(nm), stdout);
+          putchar('>');
+          break;
+        }
+        case HDR_RECORD_TYPE: {
+          val nm = as_ptr(v)[1];
+          printf("#<record-type ");
+          fwrite(str_bytes(nm), 1, (size_t)str_len(nm), stdout);
+          putchar('>');
           break;
         }
         default: printf("#<ext:%ld>", (long)ext_hdr(v));

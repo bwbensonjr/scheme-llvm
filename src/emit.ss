@@ -162,6 +162,9 @@
     (bytevector? "rt_bytevector_p")
     (%hash "rt_hash") (%make-hash-table "rt_make_hash_table")
     (%hash-table? "rt_hash_table_p") (%hash-table-spine "rt_hash_table_spine")
+    (%make-record-type "rt_make_record_type") (%make-record "rt_make_record")
+    (%record-ref "rt_record_ref") (%record-set! "rt_record_set")
+    (%record-of-type? "rt_record_of_type_p") (%record? "rt_record_p")
     (symbol? "rt_symbol_p") (string? "rt_string_p") (char? "rt_char_p")
     (boolean? "rt_boolean_p") (integer? "rt_integer_p") (exact? "rt_exact_p")
     (read-all-stdin "rt_read_all_stdin") (display "rt_display")
@@ -519,6 +522,12 @@
    "declare i64 @rt_make_hash_table(i64)\n"
    "declare i64 @rt_hash_table_p(i64)\n"
    "declare i64 @rt_hash_table_spine(i64)\n"
+   "declare i64 @rt_make_record_type(i64)\n"
+   "declare i64 @rt_make_record(i64, i64)\n"
+   "declare i64 @rt_record_ref(i64, i64)\n"
+   "declare i64 @rt_record_set(i64, i64, i64)\n"
+   "declare i64 @rt_record_of_type_p(i64, i64)\n"
+   "declare i64 @rt_record_p(i64)\n"
    "declare i64 @rt_symbol_p(i64)\n"
    "declare i64 @rt_string_p(i64)\n"
    "declare i64 @rt_char_p(i64)\n"

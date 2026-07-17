@@ -82,6 +82,8 @@ discriminated by a header code in their first word:
 | 2 (`HDR_VECTOR`) | vector    | `{hdr, length, elem0, …}` — mutable, fixed-length |
 | 3 (`HDR_ERROR`) | error object | `{hdr, message-string, irritants-list}` — R7RS error object |
 | 4 (`HDR_HASHTABLE`) | hash table | `{hdr, spine}` — opaque wrapper around a mutable spine `#(count buckets _)`; ops in the prelude |
+| 5 (`HDR_RECORD`) | record | `{hdr, type-descriptor, field0, …}` — user record; descriptor identity gives disjoint types |
+| 6 (`HDR_RECORD_TYPE`) | record type | `{hdr, name-string}` — a per-type descriptor token (identity distinguishes types) |
 
 ## Calling convention
 
