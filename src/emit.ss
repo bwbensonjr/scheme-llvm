@@ -168,6 +168,7 @@
     (symbol? "rt_symbol_p") (string? "rt_string_p") (char? "rt_char_p")
     (boolean? "rt_boolean_p") (integer? "rt_integer_p") (exact? "rt_exact_p")
     (read-all-stdin "rt_read_all_stdin") (display "rt_display")
+    (write "rt_write_val") (newline "rt_newline")
     (%no-prelude? "rt_no_prelude_p")
     (repl-mode "rt_repl_mode") (repl-input "rt_repl_input")
     (repl-state-ref "rt_repl_state_ref") (repl-state-set! "rt_repl_state_set")
@@ -645,6 +646,8 @@
    "declare i64 @rt_repl_state_set(i64)\n"
    "declare i64 @rt_root(i64)\n"
    "declare i64 @rt_display(i64)\n"
+   "declare i64 @rt_write_val(i64)\n"
+   "declare i64 @rt_newline()\n"
    "declare i64 @rt_list_length(i64)\n"
    "declare i64 @rt_build_rest(i64, i64, i64, ptr, ptr)\n"
    "declare ptr @rt_apply_argv(i64, ptr, i64, i64)\n"

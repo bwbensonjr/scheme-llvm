@@ -130,8 +130,10 @@ check rdbracket demos/reader-brackets.scm '((a (b c) (d 5)))'  # [...] brackets 
 echo "exceptions demos"
 check exceptions demos/exceptions.scm '(boom 7 "bad thing" (1 2) (outer y))'  # guard/raise/error objects
 
-echo "display demo"
+echo "output primitives"
 check display demos/display.scm '42 str z sym (1 . 2) (a b 3) done'  # display any datum (strings unquoted, chars raw), memory-safe on non-strings
+check write   demos/write.scm '"hi" #\a ("a" #\b 3) done'  # write any datum in write style (strings quoted, chars #\-prefixed, recurses)
+check newline demos/newline.scm "$(printf 'a\nb\ndone')"  # newline writes a line feed between displays
 
 echo "macro demos"
 check macrouser demos/macro-user.scm    '(3 10 10 11)'  # define-syntax: swap!/ellipsis/my-let

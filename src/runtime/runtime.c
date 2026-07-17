@@ -576,6 +576,24 @@ val rt_display(val v) {
   return NIL_V;
 }
 
+/* write ANY datum in R7RS *write* style (strings quoted, chars `#\`-prefixed),
+ * the write-style companion to rt_display.  Shares the same tag-walking printer,
+ * so its bytes are identical to the runner's final-value print (void rt_write,
+ * defined below) for the same datum.  This value-returning wrapper is distinct
+ * from that void entry: a primitive must return a val (the unspecified value)
+ * so it composes inside a `begin`, whereas the runner entry returns nothing. */
+val rt_write_val(val v) {
+  print_val(v, /*display=*/0);
+  return NIL_V;
+}
+
+/* newline: write a single line feed (U+000A) to standard output.  Nullary;
+ * returns the unspecified value (NIL) so it composes inside a `begin`. */
+val rt_newline(void) {
+  putchar('\n');
+  return NIL_V;
+}
+
 /* --- vectors (tag-7 HDR_VECTOR: { HDR_VECTOR, length, elem... }) --------- */
 static intptr_t vec_len(val v) { return (intptr_t)as_ptr(v)[1]; }
 val rt_make_vector(val k, val fill) {

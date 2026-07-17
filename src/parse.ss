@@ -18,7 +18,7 @@
                   %hash %make-hash-table %hash-table? %hash-table-spine
                   %make-record-type %make-record %record-ref %record-set! %record-of-type? %record?
                   symbol? string? char? boolean? integer? exact?
-                  read-all-stdin display %no-prelude?
+                  read-all-stdin display write newline %no-prelude?
                   repl-mode repl-input repl-state-ref repl-state-set!
                   %error-abort %raise %run-guarded
                   %error-object? %error-object-message %error-object-irritants))
