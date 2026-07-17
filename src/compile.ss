@@ -323,6 +323,9 @@
 (define *manifest-path* (or (getenv "EMIT_MANIFEST") "emit-libs.scm"))
 
 ;; manifest file (one s-expression) -> list of (name source-path artifact-dir).
+;; Only `(library ...)` entries are libraries; `(program ...)` entries (emit build
+;; targets, change: emit-build-bin-entry) are ignored here so that resolving library
+;; imports is unchanged by their presence.
 (define (read-manifest path)
   (unless (file-exists? path)
     (error 'build (string-append "library manifest not found: " path)))
@@ -332,7 +335,8 @@
                  (cond [(assq 'source clauses) => cadr]
                        [else (error 'build "manifest entry missing (source ...)" name)])
                  (cond [(assq 'artifacts clauses) => cadr] [else "build/lib"]))))
-       (car (read-program path))))
+       (filter (lambda (entry) (and (pair? entry) (eq? (car entry) 'library)))
+               (car (read-program path)))))
 
 (define (manifest-lookup manifest name)
   (or (assoc name manifest)

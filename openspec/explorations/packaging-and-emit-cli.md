@@ -131,9 +131,31 @@ Reranked after the gate correction. The genuinely-proposable-now slice turns out
 
 ## Status of the follow-on proposal
 
-- **Slice #3 → proposed** as a `module-system` change (change: `run-door-user-libraries`,
-  proposed 2026-07-17). It is concrete and unblocked; it finishes the run-program door and
-  thereby "proves the surface" packaging sits on.
-- **Slices #1 and #2 → remain in exploration.** They are real packaging work but carry the
-  two open first-order questions above; revisit once #3 lands and there is appetite to
-  decide the dependency/CLI-naming scope.
+- **Slice #3 → landed & archived** as a `module-system` change (change:
+  `run-door-user-libraries`, 2026-07-17). It finished the run-program door and thereby "proved
+  the surface" packaging sits on.
+- **Slice #2 → landed** as the `emit-build-bin-entry` change (2026-07-17). It adds the
+  `(program NAME (source S) [(output O)])` manifest entry and a `bin/emit build [NAME]` verb
+  that resolves it and delivers a standalone executable. Two decisions departed from this note's
+  initial framing:
+  - **Chez-free door, not the Chez ship path.** `emit build` delivers via `bin/scheme-compile`
+    (Chez-free: `scheme-run --emit` + clang), *not* the Chez driver's tree-shaking release
+    profile. So this slice links full library units — **no whole-program strip yet**. Porting
+    the closed-world strip (the `aot-release-profile` pass) to the Chez-free door is now its own
+    deferred item, distinct from the dependency-model question.
+  - **Chez-free resolver.** The `(program …)` entry is resolved by the embedded compiler
+    (`src/repl-core.ss` mode 10, exposed as `scheme-run --resolve-program NAME`), reusing the run
+    door's manifest machinery — keeping `emit build` Chez-free end to end.
+  - `emit` was introduced **additively** (`bin/emit`, `build` verb only); nothing was renamed,
+    so the CLI-naming/back-compat question below stays with slice #1.
+- **Slice #1 → remains in exploration.** The unified `emit lib`/`run`/`repl` dispatch and any
+  rename/deprecation of `scheme-run` / `repl-host` / `schemec` / `bin/scheme-compile` still
+  carry the CLI-naming/back-compat open question.
+
+## Open items after slice #2
+
+- **Dependency model** — unchanged and still undecided (registry / version constraints /
+  lockfile); decide before any dependency notion grows.
+- **CLI naming / back-compat** — unchanged; blocks slice #1.
+- **Chez-free tree-shaking** — new: `emit build` links full units. Bringing the closed-world
+  strip to the Chez-free door would shrink delivered binaries without needing Chez at build time.

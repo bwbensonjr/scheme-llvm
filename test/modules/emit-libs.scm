@@ -14,4 +14,8 @@
  (library (dia-a)      (source "test/modules/dia-a.sld"))
  (library (dia-b)      (source "test/modules/dia-b.sld"))
  (library (dia-c)      (source "test/modules/dia-c.sld"))
- (library (rename-lib) (source "test/modules/rename-lib.sld")))
+ (library (rename-lib) (source "test/modules/rename-lib.sld"))
+ ;; program (emit build) entries: name -> source + delivered executable
+ ;; (change: emit-build-bin-entry).  Ignored by library import resolution.
+ (program mylib-app    (source "test/modules/prog-mylib.scm") (output "build/mylib-app"))
+ (program greet-app    (source "test/modules/prog-mylib.scm")))

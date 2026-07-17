@@ -78,6 +78,22 @@ Library *names* are mapped to *source files* by a manifest — an s-expression f
 - The default `emit-libs.scm` at the repo root lists only `(scheme base)`; point `--manifest` at
   your own for additional libraries (as the test suites do with `test/modules/emit-libs.scm`).
 
+A manifest may also carry **program entries** — the deliverables `emit build` produces (change:
+`emit-build-bin-entry`):
+
+```scheme
+;; a program entry: (program NAME (source PATH) [(output EXE-PATH)])
+((library (scheme base) (source "lib/scheme/base.sld"))
+ (library (mylib)       (source "test/modules/mylib.sld"))
+ (program mylib-app     (source "test/modules/prog-mylib.scm") (output "build/mylib-app")))
+```
+
+- `NAME` is a bare symbol (distinct from a library name, which is a list), `source` is the
+  program's top-level source file, and the optional `output` is the delivered executable's path
+  (default `build/<NAME>`).
+- A program entry is **not** a library: it is never a target of `import`, and library import
+  resolution ignores it. See [`emit build`](#emit-build--deliver-a-program) below.
+
 ## Building and running
 
 There are three doors. All share one compiler core, so a library's compiled bytes are identical
@@ -130,6 +146,40 @@ program's `@scheme_entry` initializes the imported units in topological order be
 the emitted program module is **byte-identical** to the AOT door's for the same manifest (dev→ship
 fidelity). `bin/scheme-compile` uses the same `--emit` path for the native build.
 
+### `emit build` — deliver a program
+
+`bin/emit` is the project front-end. Today it exposes one verb, `build`, which turns a manifest
+**program entry** into a standalone native executable — Chez-free end to end (change:
+`emit-build-bin-entry`):
+
+```bash
+# resolve (program mylib-app) and deliver its executable via the Chez-free AOT door
+bin/emit build mylib-app --manifest test/modules/emit-libs.scm
+./build/mylib-app                       # => 142
+
+# with exactly one program entry, the NAME may be omitted
+bin/emit build --manifest my-project.scm
+```
+
+- **Resolution is Chez-free.** `emit build` resolves the `(program NAME …)` entry through the
+  embedded compiler, exposed as `scheme-run --resolve-program NAME` (manifest resolution order:
+  `--manifest` > `EMIT_MANIFEST` > default `emit-libs.scm`). It prints the resolved source and
+  output and runs nothing:
+
+  ```bash
+  build/scheme-run --resolve-program mylib-app --manifest test/modules/emit-libs.scm
+  # test/modules/prog-mylib.scm
+  # build/mylib-app
+  ```
+
+- **Delivery** is `bin/scheme-compile` (the Chez-free AOT door), so the executable is byte-for-
+  behavior identical to building the resolved source directly. This slice links full library units
+  (no tree-shaking); the output path comes from the entry's `output`, an `-o` override, or the
+  default `build/<NAME>`.
+- `emit build` **renames nothing** — `scheme-run`, `repl-host`, and `bin/scheme-compile` are
+  unchanged. Unifying the four doors under a single `emit` binary (`emit lib`/`run`/`repl`) is
+  future work; see `openspec/explorations/packaging-and-emit-cli.md`.
+
 ## `(scheme base)`
 
 The prelude — `map`, `filter`, `append`, `fold-left`, the character comparisons, the reader, the
@@ -173,8 +223,9 @@ This is Modules v0:
 - **Exports are procedures (values), not macros.** A library may use `define-syntax` internally, but
   exporting macros through `.exports` is not yet supported; derived-form macros reach programs via
   the `(scheme base)` merge, not per-library export.
-- **The Chez-free embedded runner** (`scheme-run`/`scheme-compile`) resolves only `(scheme base)`,
-  not manifest user libraries (see above).
+- **No tree-shaking on the Chez-free door.** `bin/scheme-compile` (and thus `emit build`) links
+  full library units; the closed-world reachability strip is only on the Chez driver's AOT ship
+  path (change: `aot-release-profile`). Porting it to the Chez-free door is future work.
 - Import specifiers are whole-library only — no `only`/`except`/`prefix` import sets yet.
 
 For the authoritative requirements and scenarios, see `openspec/specs/module-system/spec.md`; for

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# emit -- the project front-end (change: emit-build-bin-entry).  A single, additive
+# binary that fronts the packaging verbs; today it exposes ONE verb:
+#
+#   emit build [NAME] [--manifest FILE] [-o OUT] [--no-prelude]
+#
+# `build` resolves a manifest `(program NAME (source S) [(output O)])` entry to its
+# source + delivered path (Chez-free, via `scheme-run --resolve-program`) and builds
+# a standalone native executable through the Chez-free AOT door (bin/scheme-compile:
+# `scheme-run --emit` + clang).  With exactly one program entry, NAME may be omitted.
+#
+# This wrapper renames/removes nothing: scheme-run, repl-host, and bin/scheme-compile
+# keep working unchanged.  The other verbs (lib/run/repl) and any CLI unification are
+# future work (see openspec/explorations/packaging-and-emit-cli.md).
+set -eu
+cd "$(dirname "$0")/.."
+# Discover the toolchain + say/vsay/bytes + EMIT_VERBOSITY (see docs/OUTPUT.md).
+. tools/llvm-env.sh || exit 1
+RUN="${RUN:-build/scheme-run}"
+
+usage () { echo "usage: emit build [NAME] [--manifest FILE] [-o OUT] [--no-prelude]" >&2; }
+
+[ $# -ge 1 ] || { usage; exit 1; }
+verb="$1"; shift
+case "$verb" in
+  build) ;;
+  *) echo "emit: unknown verb '$verb' (known verbs: build)" >&2; usage; exit 2 ;;
+esac
+
+# Parse `build` args: an optional program NAME plus flags.
+name=""; manifest=""; out=""; noprelude=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --manifest) manifest="$2"; shift 2 ;;
+    -o) out="$2"; shift 2 ;;
+    --no-prelude) noprelude="--no-prelude"; shift ;;
+    -*) echo "emit build: unknown option $1" >&2; usage; exit 2 ;;
+    *)  name="$1"; shift ;;
+  esac
+done
+
+# Manifest resolution mirrors the doors: --manifest wins, then EMIT_MANIFEST, then default.
+[ -n "$manifest" ] || manifest="${EMIT_MANIFEST:-emit-libs.scm}"
+
+# Ensure the runner exists (links committed IR with LLVM only; no Chez).
+[ -x "$RUN" ] || make scheme-run >&2
+
+# Resolve the (program NAME) entry to its source + output, Chez-free.  Two lines:
+# the source path, then the output path (empty when the entry has no (output ...)).
+resolved="$("$RUN" --resolve-program $name --manifest "$manifest" < /dev/null)"
+src="$(printf '%s\n' "$resolved" | sed -n '1p')"
+entry_out="$(printf '%s\n' "$resolved" | sed -n '2p')"
+
+# Output precedence: -o flag > entry (output ...) > default build/<NAME>.
+if [ -z "$out" ]; then
+  if [ -n "$entry_out" ]; then out="$entry_out"
+  elif [ -n "$name" ]; then out="build/$name"
+  else out="build/${src##*/}"; out="${out%.scm}"; fi
+fi
+
+say "build ${name:-<sole program>} -> $out  [source $src]"
+mkdir -p "$(dirname "$out")"
+# Build through the Chez-free AOT door; EMIT_MANIFEST lets the program's own library
+# imports resolve against the same manifest.
+EMIT_MANIFEST="$manifest" bin/scheme-compile "$src" -o "$out" $noprelude
+say "wrote $out  [$(bytes "$out") bytes exe]"

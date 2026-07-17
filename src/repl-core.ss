@@ -245,13 +245,18 @@
             (set! *repl-lib-imports* (cons (cons name (cadr dl)) *repl-lib-imports*))
             (cons (quote ok) (cons (car res) (mangle name "__init")))))]))))
 
-;; Parse a manifest's text and return its source paths, newline-joined, so the
-;; host (which owns file I/O) can read each library source and load it (mode 4).
+;; Parse a manifest's text and return its LIBRARY source paths, newline-joined, so
+;; the host (which owns file I/O) can read each library source and load it (mode 4).
+;; Only `(library ...)` entries are libraries; `(program ...)` entries (emit build
+;; targets, change: emit-build-bin-entry) are ignored here -- resolving library
+;; imports is unchanged by their presence.
 (define (repl-manifest-paths text)
   (let loop ([es (car (read-all-from-string text))] [acc ""])
     (if (null? es)
         acc
-        (let ([src (cond [(assq (quote source) (cddr (car es))) => cadr] [else #f])])
+        (let* ([e   (car es)]
+               [src (and (pair? e) (eq? (car e) (quote library))
+                         (cond [(assq (quote source) (cddr e)) => cadr] [else #f]))])
           (loop (cdr es) (if src (string-append acc src "\n") acc))))))
 
 ;; Like repl-manifest-paths but OMIT (scheme base): the run door bakes (scheme base)
@@ -263,13 +268,35 @@
   (let loop ([es (car (read-all-from-string text))] [acc ""])
     (if (null? es)
         acc
-        (let* ([entry (car es)]
-               [name  (cadr entry)]
-               [src   (cond [(assq (quote source) (cddr entry)) => cadr] [else #f])])
+        (let* ([entry  (car es)]
+               [is-lib (and (pair? entry) (eq? (car entry) (quote library)))]  ; skip (program ...)
+               [name   (and is-lib (cadr entry))]
+               [src    (and is-lib
+                            (cond [(assq (quote source) (cddr entry)) => cadr] [else #f]))])
           (loop (cdr es)
                 (if (and src (not (equal? name (quote (scheme base)))))
                     (string-append acc src "\n")
                     acc))))))
+
+;; List the manifest's PROGRAM entries for the emit build door (Chez-free; change:
+;; emit-build-bin-entry).  Each `(program NAME (source S) [(output O)])` entry yields
+;; THREE newline-separated lines -- NAME, S, and O (O empty when there is no
+;; (output ...) clause) -- so the host (`scheme-run --resolve-program`) can select
+;; one by name and hand its source to bin/scheme-compile.  Library entries are
+;; ignored (this lists programs, not libraries); uses only \n, mirroring
+;; repl-manifest-paths.
+(define (repl-manifest-programs text)
+  (let loop ([es (car (read-all-from-string text))] [acc ""])
+    (if (null? es)
+        acc
+        (let ([e (car es)])
+          (if (and (pair? e) (eq? (car e) (quote program)))
+              (let* ([name    (symbol->string (cadr e))]
+                     [clauses (cddr e)]
+                     [src     (cond [(assq (quote source) clauses) => cadr] [else ""])]
+                     [out     (cond [(assq (quote output) clauses) => cadr] [else ""])])
+                (loop (cdr es) (string-append acc name "\n" src "\n" out "\n")))
+              (loop (cdr es) acc))))))
 
 ;; --- run door: run an importing program in-process (change: run-door-user-libraries) ---
 ;; The run host preloads user libraries (mode 4, WITHOUT running __init) and registers
@@ -452,6 +479,7 @@
 ;;   6 auto-import (scheme base) into the session (after the host preloads it, Stage 3)
 ;;   7 run door: compile a whole program with imports  8 run door: register baked (scheme base)
 ;;   9 run door: manifest text -> user-library paths (omitting (scheme base))
+;;  10 emit build door: manifest text -> program entries (NAME/source/output triples)
 ;; State is restored before and saved after each op (init modes seed it fresh).
 (define (repl-dispatch)
   (repl-restore-state!)
@@ -467,6 +495,7 @@
              [(= mode 7) (compile-program-text (repl-input))]    ; run door: whole program
              [(= mode 8) (run-register-scheme-base)]             ; run door: baked (scheme base)
              [(= mode 9) (repl-manifest-user-paths (repl-input))] ; run door: manifest paths sans (scheme base)
+             [(= mode 10) (repl-manifest-programs (repl-input))]  ; emit build door: program entries
              [else       (compile-one-form-text (repl-input))])])
       (repl-save-state!)
       result)))

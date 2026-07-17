@@ -174,17 +174,68 @@ static bool preload_user_libraries(const std::string &manifest, std::vector<std:
 int main(int argc, char **argv) {
   bool emit = false;
   bool no_prelude = false;
+  bool resolve = false;                        // --resolve-program: print a program entry, no run
+  std::string resolve_name;                    // "" => select the sole program entry
   std::string manifest;
   for (int i = 1; i < argc; i++) {
     std::string a(argv[i]);
     if (a == "--emit") emit = true;
     else if (a == "--no-prelude") no_prelude = true;
     else if (a == "--manifest" && i + 1 < argc) manifest = argv[++i];
+    else if (a == "--resolve-program") {
+      resolve = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') resolve_name = argv[++i];
+    }
   }
   // Manifest resolution: --manifest flag wins, then EMIT_MANIFEST, then the default.
   if (manifest.empty()) {
     const char *mp = std::getenv("EMIT_MANIFEST");
     manifest = mp ? std::string(mp) : std::string("emit-libs.scm");
+  }
+
+  // --resolve-program NAME: resolve a manifest (program NAME (source S) [(output O)])
+  //   entry to its source + output and print them (source line, then output line;
+  //   the output line is empty when the entry has no (output ...)).  Chez-free: the
+  //   embedded compiler owns the manifest grammar (mode 10); this host selects one
+  //   program by name and does the file I/O.  It never reads stdin, JITs, or runs
+  //   anything -- the `emit build` wrapper hands the printed source to bin/scheme-compile.
+  if (resolve) {
+    GC_INIT();
+    rt_repl_set(0, "", 0);                      // init-session (no prelude needed)
+    scheme_entry();
+    std::ifstream probe(manifest);
+    std::string mtext = probe.good() ? read_file(manifest) : std::string();
+    rt_repl_set(10, mtext.data(), (intptr_t)mtext.size());
+    std::string triples = scm_str(scheme_entry());
+    // Parse the mode-10 output: consecutive (name, source, output) line triples.
+    std::vector<std::vector<std::string>> progs;
+    std::istringstream ls(triples);
+    std::string n, s, o;
+    while (std::getline(ls, n) && std::getline(ls, s) && std::getline(ls, o))
+      progs.push_back({n, s, o});
+    if (progs.empty()) {
+      std::cerr << "emit: no program entry in manifest " << manifest << "\n";
+      return 1;
+    }
+    const std::vector<std::string> *pick = nullptr;
+    if (!resolve_name.empty()) {
+      for (const auto &p : progs)
+        if (p[0] == resolve_name) { pick = &p; break; }
+      if (!pick) {
+        std::cerr << "emit: no program entry named " << resolve_name
+                  << " in " << manifest << "\n";
+        return 1;
+      }
+    } else if (progs.size() == 1) {
+      pick = &progs[0];
+    } else {
+      std::cerr << "emit: multiple program entries; name one of:";
+      for (const auto &p : progs) std::cerr << " " << p[0];
+      std::cerr << "\n";
+      return 1;
+    }
+    std::cout << (*pick)[1] << "\n" << (*pick)[2] << "\n";
+    return 0;
   }
 
   // Forward --no-prelude to the embedded compiler (read via %no-prelude?): it skips

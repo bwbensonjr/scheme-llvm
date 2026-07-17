@@ -12,9 +12,7 @@ both linked into an AOT executable and loaded into the REPL: the library/export/
 surface (including export-rename), transitive lib→lib imports with topological dependency
 ordering and diamond-safe one-time initialization, and stale-artifact rebuild driven by a
 readable manifest.
-
 ## Requirements
-
 ### Requirement: Typed binding resolution
 
 Free-identifier resolution SHALL classify every resolved binding by a kind — `local` (the
@@ -372,6 +370,15 @@ that has no manifest entry SHALL be a compile-time error naming the missing libr
 standard library `(scheme base)` SHALL be resolvable through the manifest like any other
 library, so both doors build/load it through the same machinery.
 
+The manifest MAY additionally contain **program entries** of the form
+`(program NAME (source S) [(output O)])`, where `NAME` is a bare symbol naming a
+deliverable program, `source` names its top-level source file, and the optional
+`output` names the delivered executable path. A program entry names a build target,
+not a library: it is never a target of `import`, and reading the manifest to resolve
+library imports SHALL ignore program entries (library resolution is unchanged by
+their presence). Manifest reading SHALL accept a manifest that mixes library and
+program entries in any order.
+
 #### Scenario: Manifest resolves a library name to its source
 
 - **WHEN** the manifest contains an entry mapping `(mylib)` to a source file and the build
@@ -390,6 +397,19 @@ library, so both doors build/load it through the same machinery.
   resolved
 - **THEN** `(scheme base)` is located through the manifest and compiled/loaded like any other
   library unit
+
+#### Scenario: A program entry is parsed and does not affect library resolution
+
+- **WHEN** the manifest mixes `(library (mylib) (source …))` and
+  `(program my-app (source "app.scm"))` entries and a build resolves `(import (mylib))`
+- **THEN** `(mylib)` resolves through the manifest exactly as before and the program
+  entry is ignored during library resolution
+
+#### Scenario: A program entry is resolvable by name
+
+- **WHEN** the manifest contains `(program my-app (source "app.scm") (output "build/app"))`
+  and the program `my-app` is looked up
+- **THEN** the manifest yields its source (`app.scm`) and output (`build/app`)
 
 ### Requirement: Transitive library imports
 
@@ -569,3 +589,4 @@ compiler, the largest consumer of the module system, exactly as it is for user p
 - **WHEN** any of the compiler binaries is built from committed IR
 - **THEN** it links exactly one `scheme.base.ll` and runs its `__init` once, and the binary behaves
   identically to the prelude-prepended build it replaces
+
