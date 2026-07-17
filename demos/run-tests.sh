@@ -74,6 +74,7 @@ check derived   demos/derived.scm   180   # cond/and/or/when/unless/let*/named-l
 check casecxr   demos/case-cxr.scm  1511  # case derived form + cxr combinators (caar..cadar)
 check intdef    demos/internal-define.scm '(30 100 105)'  # internal (body) defines, letrec* semantics
 check namedloop demos/named-let-loop.scm 42  # named-let tail loop, bounded stack
+check ackermann demos/ackermann.scm 8189  # (ack 3 10): non-tail recursion + fixnum arith (P5)
 check naryarith demos/nary-arith.scm 43  # n-ary + - *, unary negation, identities
 check narycmp   demos/nary-compare.scm 11111101  # n-ary/chained < = > <= >=, single-eval
 check eqnot     demos/eq-not.scm 1100110101  # n-ary eq?/eqv? + not primitive
