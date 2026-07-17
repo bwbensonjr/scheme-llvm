@@ -160,6 +160,8 @@
     (make-bytevector "rt_make_bytevector") (bytevector-u8-ref "rt_bytevector_u8_ref")
     (bytevector-u8-set! "rt_bytevector_u8_set") (bytevector-length "rt_bytevector_length")
     (bytevector? "rt_bytevector_p")
+    (%hash "rt_hash") (%make-hash-table "rt_make_hash_table")
+    (%hash-table? "rt_hash_table_p") (%hash-table-spine "rt_hash_table_spine")
     (symbol? "rt_symbol_p") (string? "rt_string_p") (char? "rt_char_p")
     (boolean? "rt_boolean_p") (integer? "rt_integer_p") (exact? "rt_exact_p")
     (read-all-stdin "rt_read_all_stdin") (display "rt_display")
@@ -513,6 +515,10 @@
    "declare i64 @rt_bytevector_u8_set(i64, i64, i64)\n"
    "declare i64 @rt_bytevector_length(i64)\n"
    "declare i64 @rt_bytevector_p(i64)\n"
+   "declare i64 @rt_hash(i64)\n"
+   "declare i64 @rt_make_hash_table(i64)\n"
+   "declare i64 @rt_hash_table_p(i64)\n"
+   "declare i64 @rt_hash_table_spine(i64)\n"
    "declare i64 @rt_symbol_p(i64)\n"
    "declare i64 @rt_string_p(i64)\n"
    "declare i64 @rt_char_p(i64)\n"

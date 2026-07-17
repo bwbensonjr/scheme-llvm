@@ -61,6 +61,8 @@ char rt_trap_msg[128] = "";
                             * the retired HDR_CHAR slot -- characters are now immediate) */
 #define HDR_VECTOR     2   /* { HDR_VECTOR, length, elem0, ... } */
 #define HDR_ERROR      3   /* { HDR_ERROR, message-string, irritants-list } (R7RS error obj) */
+#define HDR_HASHTABLE  4   /* { HDR_HASHTABLE, spine-vector } -- opaque wrapper around a
+                            * mutable spine #(count buckets _); ops live in the prelude */
 
 #define FIX(n)     ((val)(((intptr_t)(n)) << 3))
 #define UNFIX(v)   (((intptr_t)(v)) >> 3)
@@ -607,6 +609,74 @@ val rt_bytevector_p(val v) {
   return truthy(tag_of(v) == TAG_EXT && ext_hdr(v) == HDR_BYTEVECTOR);
 }
 
+/* --- hashing (backs the prelude hash tables) ----------------------------
+ * rt_hash maps any value to a NON-NEGATIVE tagged fixnum such that `equal?`
+ * values hash equally -- the only property lookup correctness needs, since the
+ * bucket scan falls back to `equal?` (so collisions are merely slow, never
+ * wrong; it need not be a perfect hash).  Hashing is by value class: fixnums
+ * and immediates by their canonical word; strings/symbols by an FNV-1a byte
+ * hash of their contents (two `equal?` strings with distinct storage collide
+ * into the same bucket); pairs/vectors by a depth-bounded shallow fold to stay
+ * O(1)-ish.  Interned symbols with equal names are the same object, so name
+ * hashing agrees with eq?/equal?. */
+static const uintptr_t FNV_PRIME = 1099511628211u;
+static const uintptr_t FNV_BASIS = 14695981039346656037u;
+static uintptr_t fnv1a(const unsigned char *b, size_t n, uintptr_t h) {
+  for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= FNV_PRIME; }
+  return h;
+}
+static uintptr_t hash_word(val v, int depth) {
+  switch (tag_of(v)) {
+    case TAG_FIXNUM: return (uintptr_t)UNFIX(v);
+    case TAG_BOOL:                                  /* bool + char immediates */
+    case TAG_NIL:    return (uintptr_t)v;           /* canonical word */
+    case TAG_SYMBOL: { const char *nm = sym_name(v);
+                       return fnv1a((const unsigned char *)nm, strlen(nm), FNV_BASIS); }
+    case TAG_PAIR:
+      if (depth <= 0) return FNV_BASIS;
+      { uintptr_t h = FNV_BASIS;
+        h = (h ^ hash_word(as_ptr(v)[0], depth - 1)) * FNV_PRIME;
+        h = (h ^ hash_word(as_ptr(v)[1], depth - 1)) * FNV_PRIME;
+        return h; }
+    case TAG_EXT:
+      if (ext_hdr(v) == HDR_STRING)
+        return fnv1a((const unsigned char *)str_bytes(v), (size_t)str_len(v), FNV_BASIS);
+      if (ext_hdr(v) == HDR_BYTEVECTOR)
+        return fnv1a(bv_bytes(v), (size_t)bv_len(v), FNV_BASIS);
+      if (ext_hdr(v) == HDR_VECTOR) {
+        intptr_t n = vec_len(v);
+        uintptr_t h = FNV_BASIS ^ (uintptr_t)n;
+        if (depth > 0) {
+          intptr_t lim = n < 8 ? n : 8;              /* bounded shallow fold */
+          for (intptr_t i = 0; i < lim; i++)
+            h = (h ^ hash_word(as_ptr(v)[i + 2], depth - 1)) * FNV_PRIME;
+        }
+        return h;
+      }
+      return (uintptr_t)ext_hdr(v);
+    default: return (uintptr_t)v;                    /* closures/boxes: by identity word */
+  }
+}
+val rt_hash(val v) {
+  /* mask to 60 bits so the value stays non-negative after FIX's <<3 */
+  return FIX((intptr_t)(hash_word(v, 4) & (uintptr_t)0x0FFFFFFFFFFFFFFFu));
+}
+
+/* --- hash tables (tag-7 HDR_HASHTABLE: { HDR_HASHTABLE, spine }) ----------
+ * An opaque wrapper around a mutable spine vector #(count buckets _); every
+ * hash-table-* operation lives in the prelude over the spine.  The wrapper
+ * exists only to give hash-table? a disjoint type and a distinct printed form
+ * -- a bare vector could not be told apart from a user vector. */
+val rt_make_hash_table(val spine) {
+  val *p = (val *)GC_MALLOC(2 * sizeof(val));
+  p[0] = (val)HDR_HASHTABLE; p[1] = spine;
+  return tag_ptr(p, TAG_EXT);
+}
+val rt_hash_table_spine(val ht) { return as_ptr(ht)[1]; }
+val rt_hash_table_p(val ht) {
+  return truthy(tag_of(ht) == TAG_EXT && ext_hdr(ht) == HDR_HASHTABLE);
+}
+
 /* --- type predicates (self-hosting gap G9) -------------------------------- */
 /* Each returns #t/#f by inspecting the tag (and, for tag-7 heap objects, the
  * header code -- guard the ext_hdr deref behind the TAG_EXT check, as vector? does).
@@ -850,6 +920,12 @@ static void print_val(val v, int display) {
           printf("#<error ");
           fwrite(str_bytes(msg), 1, (size_t)str_len(msg), stdout);
           putchar('>');
+          break;
+        }
+        case HDR_HASHTABLE: {
+          val spine = as_ptr(v)[1];             /* #(count buckets _) */
+          intptr_t count = UNFIX(as_ptr(spine)[2]);  /* vector elem 0 = count */
+          printf("#<hash-table %ld>", (long)count);
           break;
         }
         default: printf("#<ext:%ld>", (long)ext_hdr(v));

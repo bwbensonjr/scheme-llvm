@@ -112,6 +112,8 @@ check prelude demos/prelude.scm        '(1 4 9 6 5 4)'  # standard library: list
 check equallist demos/equal-list.scm   '(1 1 0 ((2) (3)) ("b" . 2) (2 3 4) -6 (1 2 3))'  # equal? + member/assoc/filter/fold
 check vectors  demos/vectors.scm       '(20 4 99 #t #f #(1 2 3) #t #f 9)'  # vector type + ops + printer + #(...) reader
 check bytevectors demos/bytevectors.scm '(20 4 255 #t #f #u8(1 2 3) #t #f 9)'  # bytevector type + ops + printer + #u8(...) reader
+check hashtables demos/hash-tables.scm '(1 42 2 #f 100 #t #t #t #f #t)'  # hash-table set/ref/default/overwrite/delete/grow/predicate/%hash
+check hashprint demos/hash-print.scm   '#<hash-table 2>'  # opaque hash-table print
 
 echo "reader demos"
 check rdlist  demos/reader-list.scm    '(a (b c) 42)'         # read a nested list

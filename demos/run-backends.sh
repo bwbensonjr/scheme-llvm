@@ -96,6 +96,8 @@ run3 prelude   demos/prelude.scm          '(1 4 9 6 5 4)'  # standard library pr
 run3 equallist demos/equal-list.scm       '(1 1 0 ((2) (3)) ("b" . 2) (2 3 4) -6 (1 2 3))'  # equal? + member/assoc/filter/fold
 run3 vectors   demos/vectors.scm          '(20 4 99 #t #f #(1 2 3) #t #f 9)'  # vector type: ops + printer + #(...) reader, survives GC under lli
 run3 bytevectors demos/bytevectors.scm    '(20 4 255 #t #f #u8(1 2 3) #t #f 9)'  # bytevector type: ops + printer + #u8(...) reader, survives GC under lli
+run3 hashtables demos/hash-tables.scm     '(1 42 2 #f 100 #t #t #t #f #t)'  # hash-table: set/ref/delete/grow+rehash survives GC under lli
+run3 hashprint  demos/hash-print.scm      '#<hash-table 2>'  # opaque hash-table print
 run3 rdlist    demos/reader-list.scm      '(a (b c) 42)'            # reader: nested list
 run3 rdatoms   demos/reader-atoms.scm     '(42 hello #t #\z "hi")'  # reader: atom types
 run3 rdeq      demos/reader-eq.scm        '#t'                      # reader: interned symbol

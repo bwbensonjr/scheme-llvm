@@ -313,6 +313,108 @@
           (begin (bytevector-u8-set! bv i (car bs)) (loop (cdr bs) (+ i 1)))))))
 (define (bytevector . bs) (list->bytevector bs))
 
+;; --- hash tables (openspec hash-tables): SRFI-69 subset, equal?-keyed --------
+;; Built on vectors + the %hash primitive.  A table is an opaque HDR_HASHTABLE
+;; wrapper (%make-hash-table) around a mutable spine vector #(count buckets _);
+;; `buckets` is a vector of association lists ((key . val) ...).  Pairs are
+;; immutable here, so an existing key is updated by rebuilding its bucket alist
+;; (drop the old entry, prepend the new one).  The table grows (rehashes into
+;; ~2x buckets) once count/nbuckets exceeds the load factor, keeping lookup
+;; amortized O(1).  %hash need only be CONSISTENT with equal? (the bucket scan
+;; below is the source of truth), so collisions are merely slow, never wrong.
+(define %ht-initial-buckets 8)
+(define %ht-load-factor 3)
+
+(define (make-hash-table)
+  (%make-hash-table (vector 0 (make-vector %ht-initial-buckets (quote ())) #f)))
+(define (hash-table? x) (%hash-table? x))
+
+(define (%ht-count ht)        (vector-ref (%hash-table-spine ht) 0))
+(define (%ht-buckets ht)      (vector-ref (%hash-table-spine ht) 1))
+(define (%ht-set-count! ht n) (vector-set! (%hash-table-spine ht) 0 n))
+(define (%ht-set-buckets! ht b) (vector-set! (%hash-table-spine ht) 1 b))
+
+;; %hash is non-negative and nbuckets positive, so remainder == modulo here.
+(define (%ht-index key nbuckets) (remainder (%hash key) nbuckets))
+
+;; the (key . val) pair for an equal? key in an alist, or #f
+(define (%ht-assoc key al)
+  (if (null? al) #f
+      (if (equal? key (car (car al))) (car al) (%ht-assoc key (cdr al)))))
+;; the alist with the (first) equal? key removed
+(define (%ht-remove key al)
+  (if (null? al) (quote ())
+      (if (equal? key (car (car al)))
+          (cdr al)
+          (cons (car al) (%ht-remove key (cdr al))))))
+
+(define (hash-table-ref/default ht key default)
+  (let* ((bs (%ht-buckets ht))
+         (p (%ht-assoc key (vector-ref bs (%ht-index key (vector-length bs))))))
+    (if p (cdr p) default)))
+
+(define (hash-table-contains? ht key)
+  (let ((bs (%ht-buckets ht)))
+    (if (%ht-assoc key (vector-ref bs (%ht-index key (vector-length bs)))) #t #f)))
+
+(define (hash-table-ref ht key)
+  (let* ((bs (%ht-buckets ht))
+         (p (%ht-assoc key (vector-ref bs (%ht-index key (vector-length bs))))))
+    (if p (cdr p) (error "hash-table-ref: key not found" key))))
+
+(define (hash-table-set! ht key val)
+  (let* ((bs (%ht-buckets ht))
+         (n (vector-length bs))
+         (i (%ht-index key n))
+         (al (vector-ref bs i))
+         (existed (%ht-assoc key al)))
+    (vector-set! bs i (cons (cons key val) (if existed (%ht-remove key al) al)))
+    (if existed
+        #f
+        (begin
+          (%ht-set-count! ht (+ (%ht-count ht) 1))
+          (if (> (%ht-count ht) (* %ht-load-factor n)) (%ht-grow! ht) #f)))))
+
+(define (hash-table-delete! ht key)
+  (let* ((bs (%ht-buckets ht))
+         (i (%ht-index key (vector-length bs)))
+         (al (vector-ref bs i)))
+    (if (%ht-assoc key al)
+        (begin (vector-set! bs i (%ht-remove key al))
+               (%ht-set-count! ht (- (%ht-count ht) 1)))
+        #f)))
+
+;; reinsert every entry into a ~2x bucket vector, recomputing each index
+(define (%ht-grow! ht)
+  (let* ((old (%ht-buckets ht))
+         (newn (* 2 (vector-length old)))
+         (newb (make-vector newn (quote ()))))
+    (let loop ((i 0))
+      (if (< i (vector-length old))
+          (begin
+            (let bloop ((al (vector-ref old i)))
+              (if (null? al) #f
+                  (let* ((kv (car al)) (j (%ht-index (car kv) newn)))
+                    (vector-set! newb j (cons kv (vector-ref newb j)))
+                    (bloop (cdr al)))))
+            (loop (+ i 1)))
+          #f))
+    (%ht-set-buckets! ht newb)))
+
+(define (hash-table-size ht) (%ht-count ht))
+
+(define (%ht-fold-buckets al acc)
+  (if (null? al) acc
+      (cons (cons (car (car al)) (cdr (car al))) (%ht-fold-buckets (cdr al) acc))))
+(define (hash-table->alist ht)
+  (let ((bs (%ht-buckets ht)))
+    (let loop ((i 0) (acc (quote ())))
+      (if (< i (vector-length bs))
+          (loop (+ i 1) (%ht-fold-buckets (vector-ref bs i) acc))
+          acc))))
+(define (hash-table-keys ht) (map car (hash-table->alist ht)))
+(define (hash-table-values ht) (map cdr (hash-table->alist ht)))
+
 ;;; --- reader (scheme-reader): read-from-string source text -> datum --------
 ;;; Recursive descent over a string; the scan position is threaded functionally
 ;;; as (datum . next-index) pairs.  Characters are classified by codepoint
