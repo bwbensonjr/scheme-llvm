@@ -1,35 +1,52 @@
-## Resumption state (2026-07-18) — Batch A (all fixed-arity) SHIPPED; next: Batch B
+## Resumption state (2026-07-18) — Batches A + B SHIPPED (48 prims first-class); next: cleanup
 
 **Branch:** `feat/first-class-primitives` (off `main` @ the D0-decision commit). `main` is
 clean of implementation code.
 
-**Batch A shipped — all single-signature fixed-arity prims are first-class** (commits
-0a18580 `cons`, 4303bf0 the 30-prim batch, 197f653 docs). Each was a single direct `make
-regen` that converged at iter 1; `scheme.base.ll` byte-identical both times; self-host fixed
-point + Chez independent-host re-derivation green; full `./run-dev-tests.sh` 18/18. The
-legacy fixed-arity eta (`*prim-eta-arity*`, `nsyms`) is retired; `prim-as-value` now holds
-only the variadic `string-append` case. `not` is fully first-class/shadowable/universal
-(its `core-language` spec requirement is met).
+**48 primitives are now first-class and shadowable.** Every direct `make regen` converged at
+iter 1; `scheme.base.ll` byte-identical every slice; self-host fixed point + Chez
+independent-host re-derivation green; full `./run-dev-tests.sh` 18/18 after each. Slices:
+- **Batch A** (commits 0a18580 `cons`, 4303bf0 the 30 fixed-arity prims) — `cons quotient
+  remainder car cdr null? pair? equal? not char->integer integer->char string-length
+  string-ref string->symbol symbol->string list->string string-set! vector-ref vector-set!
+  vector-length vector? bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector?
+  symbol? string? char? boolean? integer? exact?`.
+- **Batch B.1** (47001c2 + REPL-hygiene fix 0a28c22) — `+ - * = < eq? eqv?`. The D2 expander
+  fold already reduces n-ary operator calls to binary forms emitting the plain name, so these
+  are plain arity-2 integrables: rename gives binary shadowing, the inliner rewrites to
+  `%+`/…, and the inline fixnum fast path is preserved (`(+ 1 2)` still emits `add i64`).
+- **Batch B.2** (b141bf5) — `substring string=? make-string string-copy make-vector
+  make-bytevector read-all-stdin display write newline` (all fixed-arity in Emit).
 
-**Batch A membership (31 integrable prims):** `cons quotient remainder car cdr null? pair?
-equal? not char->integer integer->char string-length string-ref string->symbol
-symbol->string list->string string-set! vector-ref vector-set! vector-length vector?
-bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector? symbol? string? char?
-boolean? integer? exact?`.
+**Two things to know for anyone continuing:**
+1. **The REPL hygiene known-set** (`init-session` in `repl-core.ss`) must union
+   `(map car *integrable*)`, mirroring `compute-known` — else a macro template mentioning an
+   integrable (e.g. `+` in `(syntax-rules () ((_ e) (+ e e)))`) gets hygiene-renamed to `+.0`
+   and is unbound (fix 0a28c22). Any new integrable is covered automatically now.
+2. **White-box golden tests** that assert emitted IL (`test/repl-frontend.ss`) hardcode the
+   raw op name, so renaming `+`→`%+` etc. requires updating those goldens.
 
-**Next: Batch B — the deferred ops.** Two sub-groups, both still reserved prims today:
-1. **Expander-folded variadic** (`+ - * = < eq? eqv? string-append`, and the `> <= >=`
-   keyword forms): `expand.ss` folds n-ary calls to binary primcalls (`expand-arith`,
-   `expand-compare`, `expand-string-append`) keyed on the head symbol, independent of
-   `*prims*`. Per D2, keep that fold emitting binary raw primcalls for literal calls; add an
-   integrable entry so **value/`apply` position** eta-expands (e.g. bare `+` → a fold lambda,
-   bare `eq?` → `(lambda (a b) (primcall %eq? a b))`). Decide whether the fold should emit the
-   `%`-op directly (then these names leave `*prims*` like Batch A) or keep emitting the plain
-   name that the inliner then rewrites. Retiring `prim-as-value`/`string-append`'s special
-   case (finishing task 4.1) lands here.
-2. **R7RS optional-arity** (`make-string make-vector make-bytevector substring string-copy
-   string=?`): the inliner keys on an exact arity, so these need either per-arity integrable
-   entries or a variadic integrable shape. Verify actual call-site arities in the tree first.
+**Still reserved (by design or pending):**
+- **`string-append`** — first-class as a VALUE (via `prim-as-value` at parse time) but NOT
+  shadowable and NOT integrable, because its value-eta folds over the prelude global
+  `%str-concat`, which must be name-resolved; the post-rename inliner cannot synthesize a
+  reference to a prelude binding. Making it integrable needs a **pre-rename value-eta path**.
+- Internal `%`-ops (hashing, records, error plumbing, `%no-prelude?`) and the REPL-state ops
+  (`repl-mode`/`repl-input`/`repl-state-ref`/`repl-state-set!`) — compiler/host internals,
+  never used as values; reserved by design (raw `%`-ops staying internal is a Non-Goal).
+
+**Next (cleanup / completion):**
+1. **Variadic value-use gap.** `+ - * = <` have BINARY value-etas, so `(map + xs ys)` works
+   but `(apply + ns)` works only for a 2-element `ns` (the spec's `(apply + ns)` scenario is
+   only partially met; still a strict improvement — it did not compile at all before). Full
+   variadic value-use of the folding ops (`+ - * = < string-append`) needs pre-rename
+   fold-helper etas (a shared mechanism with string-append). Solving this closes task 4.1
+   (retire `prim-as-value`) and makes `string-append` shadowable too.
+2. **Task 4.2** — reconcile "reserved primitive" wording in `core-language` specs/comments.
+3. **Task 4.3** (optional) — unify the expander fold into the shadow-aware inliner, which would
+   also make n-ary *operator* calls of a shadowed folding op correct (today a 3+-ary call of a
+   shadowed `+` still folds as the primitive — a narrow edge, since 2-ary shadowing is correct).
+4. **Verification** — 5.3 binary size / regen time within noise; 5.4 `make catalogue`.
 
 **Cons slice (the first Batch A slice), for reference (commit 0a18580):**
 - A single **direct `make regen` converged** — the staged 2-regen (D3) proved unnecessary
@@ -75,19 +92,18 @@ so the dual-host shim (task 1.3) is unnecessary.
    moved to `*integrable*`; direct regen converged; the legacy fixed-arity eta is retired;
    18/18 dev-tests green. (See the Batch A note at the top for membership and the deferred
    `eqv?`/optional-arity ops.)
-3. **Batch B — variadic + optional-arity** (the two sub-groups in the resumption note above):
-   the expander-folded family (`+ - * = < eq? eqv? string-append`) and the R7RS optional-arity
-   ops (`make-*`, `substring`, `string-copy`, `string=?`). Keep the expander fold per D2 for
-   literal n-ary calls; add integrable entries so value/`apply` position works; finish
-   retiring `prim-as-value`. Regen + tests.
-4. **Scale** to any remaining reserved prims (I/O `display`/`write`/`newline`/`read-all-stdin`,
-   REPL state ops) if they should be first-class; leave the internal `%`-ops reserved.
-5. `docs/PIPELINE.md` stage doc (**done**, commit 1a906f5); automated regression guards (the
-   library / `--no-prelude` cases, currently only manually checked); final verification
-   (binary size + regen time within noise of baseline); `make catalogue` refresh.
+3. ~~**Batch B — variadic + optional-arity**~~ — **DONE (commits 47001c2, 0a28c22, b141bf5).**
+   `+ - * = < eq? eqv?` (B.1) and `substring string=? make-* string-copy display write newline
+   read-all-stdin` (B.2) are integrable. The "optional-arity" ops turned out fixed-arity in
+   Emit (fixed rt_* C signatures). `string-append` deferred (pre-rename value-eta needed).
+4. **Cleanup / completion** (see the top-of-file "Next" list): close the variadic value-use
+   gap for the folding ops (shared pre-rename fold-eta mechanism, which also retires
+   `prim-as-value` and makes `string-append` shadowable — task 4.1); reconcile spec wording
+   (4.2); optionally unify the fold into the inliner (4.3); final verification (5.3) and
+   `make catalogue` (5.4).
 
 **How to resume:** `git switch feat/first-class-primitives`; re-baseline with `make &&
-./run-dev-tests.sh` (green — bootstrap now matches source); then do state 2 (expand Batch A).
+./run-dev-tests.sh` (green — bootstrap matches source); then pick up the cleanup list above.
 
 ## Context
 
