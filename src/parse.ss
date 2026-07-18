@@ -8,16 +8,23 @@
 ;;;
 ;;; Primitive names are reserved keywords (not rebindable) in the M1 subset.
 
-(define *prims* '(+ - * quotient remainder = < %cons car cdr null? pair? eq? eqv? equal? not
-                  char->integer integer->char
-                  string-length string-ref substring string->symbol
-                  string=? string-append symbol->string list->string make-string
-                  string-set! string-copy
-                  make-vector vector-ref vector-set! vector-length vector?
-                  make-bytevector bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector?
+;; Reserved primcall heads: the raw %-ops, plus the plain names still handled as
+;; reserved keywords -- the expander-folded variadic ops (`+ - * = <`, `eq?`/`eqv?`,
+;; `string-append`), the R7RS optional-arity ops (`make-*`, `substring`,
+;; `string-copy`, `string=?`), I/O, and REPL state.  Most fixed-arity plain names
+;; are now *integrable* (below), i.e. ordinary shadowable bindings.
+(define *prims* '(+ - * = < eq? eqv?
+                  %cons %quotient %remainder %car %cdr %null? %pair? %equal? %not
+                  %char->integer %integer->char
+                  %string-length %string-ref %string->symbol %symbol->string %list->string
+                  %string-set!
+                  %vector-ref %vector-set! %vector-length %vector?
+                  %bytevector-u8-ref %bytevector-u8-set! %bytevector-length %bytevector?
+                  %symbol? %string? %char? %boolean? %integer? %exact?
+                  substring string=? string-append make-string string-copy make-vector
+                  make-bytevector
                   %hash %make-hash-table %hash-table? %hash-table-spine
                   %make-record-type %make-record %record-ref %record-set! %record-of-type? %record?
-                  symbol? string? char? boolean? integer? exact?
                   read-all-stdin display write newline %no-prelude?
                   repl-mode repl-input repl-state-ref repl-state-set!
                   %error-abort %raise %run-guarded
@@ -33,9 +40,11 @@
 ;; fix lives here, not in the prelude: a prelude `(define (car x) (car x))` would
 ;; be a primcall under Emit but infinite self-recursion under the bootstrap
 ;; host, which loads the prelude directly.
-;; car/cdr keep the legacy parse-time eta; cons is now an *integrable* (below),
-;; handled by the shadow-aware inline-primitives pass (change: first-class-primitives).
-(define *prim-eta-arity* '((car . 1) (cdr . 1)))
+;; The legacy fixed-arity eta list (`car`/`cdr`) is retired: those are now
+;; *integrable* (below), so the shadow-aware inline-primitives pass supplies both
+;; their direct-call inlining and their value-position eta.  `string-append` is the
+;; sole remaining eta special-case (variadic; handled in `prim-as-value`), pending
+;; Batch B (change: first-class-primitives, task 4.1).
 
 ;; ---- integrable primitives (change: first-class-primitives) ----
 ;; Plain names that are ORDINARY, shadowable, first-class -- NOT reserved keywords.
@@ -47,7 +56,21 @@
 ;;   shadowed (renamed symbol) -> untouched (ordinary binding wins)
 ;; Universal by construction: the names are compiler-intrinsic (added to
 ;; compute-known), so programs, user libraries, and --no-prelude all get them.
-(define *integrable* '((cons %cons 2)))
+(define *integrable*
+  '((cons %cons 2)
+    (quotient %quotient 2) (remainder %remainder 2)
+    (car %car 1) (cdr %cdr 1) (null? %null? 1) (pair? %pair? 1)
+    (equal? %equal? 2) (not %not 1)
+    (char->integer %char->integer 1) (integer->char %integer->char 1)
+    (string-length %string-length 1) (string-ref %string-ref 2)
+    (string->symbol %string->symbol 1) (symbol->string %symbol->string 1)
+    (list->string %list->string 1) (string-set! %string-set! 3)
+    (vector-ref %vector-ref 2) (vector-set! %vector-set! 3)
+    (vector-length %vector-length 1) (vector? %vector? 1)
+    (bytevector-u8-ref %bytevector-u8-ref 2) (bytevector-u8-set! %bytevector-u8-set! 3)
+    (bytevector-length %bytevector-length 1) (bytevector? %bytevector? 1)
+    (symbol? %symbol? 1) (string? %string? 1) (char? %char? 1)
+    (boolean? %boolean? 1) (integer? %integer? 1) (exact? %exact? 1)))
 (define (integrable-lookup name) (assq name *integrable*))
 (define (integrable? name) (and (integrable-lookup name) #t))
 
@@ -86,22 +109,15 @@
        `(letrec ,(map (lambda (b) (list (car b) (I (cadr b)))) binds) ,(I body))]))
   (I e))
 
-(define (nsyms n)   ; (p1 ... pn), fresh-looking params for an eta lambda
-  (let loop ([i 1] [acc '()])
-    (if (> i n)
-        (reverse acc)
-        (loop (+ i 1)
-              (cons (string->symbol (string-append "p" (number->string i))) acc)))))
-
-;; source lambda that behaves as the primitive OP used as a value.  `string-append`
-;; is variadic (folds over its args via the prelude helper `%str-concat`); the
-;; fixed-arity prims eta-expand to `(lambda (p ...) (op p ...))`.
+;; source lambda that behaves as the reserved primitive OP used as a value.  Only
+;; `string-append` remains (variadic, folds over its args via the prelude helper
+;; `%str-concat`); every fixed-arity primitive is now *integrable*, so its value-use
+;; eta is synthesized by inline-primitives, not here.  The other reserved prims
+;; (`+ - * = <`, `eq?`/`eqv?`, `make-*`, I/O, …) are not yet first-class values.
 (define (prim-as-value op)
-  (cond
-    [(eq? op 'string-append) '(lambda gs (%str-concat gs))]
-    [(assq op *prim-eta-arity*)
-     => (lambda (p) (let ([ps (nsyms (cdr p))]) `(lambda ,ps (,op ,@ps))))]
-    [else (error 'parse "primitive not available as a first-class value" op)]))
+  (if (eq? op 'string-append)
+      '(lambda gs (%str-concat gs))
+      (error 'parse "primitive not available as a first-class value" op)))
 
 ;; ---- variadic parameter lists ----
 ;; A lambda's param field may be a proper list (fixed arity), an improper list
