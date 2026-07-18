@@ -178,6 +178,8 @@ library-structured source are frozen under `historical/genesis/`.
   notes (`explorations/`).
 - `LLVM.md`, `docs/PIPELINE.md` — value representation / calling convention, and the pass
   ladder.
+- `docs/PRIMITIVES.md` — the primitive layer: how every primitive is an ordinary, shadowable,
+  universal procedure, and how the `inline-primitives` pass recovers bare-metal codegen.
 - `docs/MODULES.md` — using the module system: writing a `define-library`, `import`/`export`, the
   manifest (`emit-libs.scm`), building/running an importing program on each door, and `(scheme base)`.
 - `docs/OUTPUT.md` — the tool-output convention: message format, stderr/stdout discipline,
