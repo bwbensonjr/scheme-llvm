@@ -1,10 +1,37 @@
-## Resumption state (2026-07-18) — cons slice SHIPPED; next: expand Batch A
+## Resumption state (2026-07-18) — Batch A (all fixed-arity) SHIPPED; next: Batch B
 
 **Branch:** `feat/first-class-primitives` (off `main` @ the D0-decision commit). `main` is
 clean of implementation code.
 
-**Cons slice shipped (commit 0a18580):** the intrinsic-floor mechanism for `cons` is
-regen'd, committed, and self-host-verified.
+**Batch A shipped — all single-signature fixed-arity prims are first-class** (commits
+0a18580 `cons`, 4303bf0 the 30-prim batch, 197f653 docs). Each was a single direct `make
+regen` that converged at iter 1; `scheme.base.ll` byte-identical both times; self-host fixed
+point + Chez independent-host re-derivation green; full `./run-dev-tests.sh` 18/18. The
+legacy fixed-arity eta (`*prim-eta-arity*`, `nsyms`) is retired; `prim-as-value` now holds
+only the variadic `string-append` case. `not` is fully first-class/shadowable/universal
+(its `core-language` spec requirement is met).
+
+**Batch A membership (31 integrable prims):** `cons quotient remainder car cdr null? pair?
+equal? not char->integer integer->char string-length string-ref string->symbol
+symbol->string list->string string-set! vector-ref vector-set! vector-length vector?
+bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector? symbol? string? char?
+boolean? integer? exact?`.
+
+**Next: Batch B — the deferred ops.** Two sub-groups, both still reserved prims today:
+1. **Expander-folded variadic** (`+ - * = < eq? eqv? string-append`, and the `> <= >=`
+   keyword forms): `expand.ss` folds n-ary calls to binary primcalls (`expand-arith`,
+   `expand-compare`, `expand-string-append`) keyed on the head symbol, independent of
+   `*prims*`. Per D2, keep that fold emitting binary raw primcalls for literal calls; add an
+   integrable entry so **value/`apply` position** eta-expands (e.g. bare `+` → a fold lambda,
+   bare `eq?` → `(lambda (a b) (primcall %eq? a b))`). Decide whether the fold should emit the
+   `%`-op directly (then these names leave `*prims*` like Batch A) or keep emitting the plain
+   name that the inliner then rewrites. Retiring `prim-as-value`/`string-append`'s special
+   case (finishing task 4.1) lands here.
+2. **R7RS optional-arity** (`make-string make-vector make-bytevector substring string-copy
+   string=?`): the inliner keys on an exact arity, so these need either per-arity integrable
+   entries or a variadic integrable shape. Verify actual call-site arities in the tree first.
+
+**Cons slice (the first Batch A slice), for reference (commit 0a18580):**
 - A single **direct `make regen` converged** — the staged 2-regen (D3) proved unnecessary
   for this shape: the old seed never needs to emit `%cons` to compile the new source (it
   compiles the new source treating `cons` as its own prim; the new compiler's inliner only
@@ -43,23 +70,21 @@ for `cons`.
 so the dual-host shim (task 1.3) is unnecessary.
 
 **Next states (in order):**
-1. ~~**Ship the `cons` slice**~~ — **DONE (commit 0a18580).** Direct regen converged (the
-   staged 2-regen was unnecessary for this shape — see the shipped-slice note above); full
-   `./run-dev-tests.sh` green.
-2. **Expand Batch A — remaining fixed-arity prims** (`car`, `cdr`, `not`, `eqv?`, `null?`,
-   `pair?`, `eq?`, `equal?`, the predicates, …): add each to `*integrable*` (name → `%`-op +
-   arity), add the `%`-synonym to `*prims*` + the emit prim-table, drop it from
-   `*prim-eta-arity*`. These are the same shape as `cons`, so batch several at once and do a
-   single direct regen (fall back to a stage-1 synonym regen only if the fixed point fails to
-   converge). Retire `*prim-eta-arity*`/`prim-as-value` entirely once `car`/`cdr` move over.
-3. **Batch B — `+`/variadic**: add a fold/identity rule to `*integrable*` and teach
-   `inline-primitives` to fold a direct n-ary `(+ …)` into nested `(primcall %add …)`
-   (or keep the expander fold per D2 and only eta variadic value-use). Value/`apply` use is
-   the eta lambda over a fold. Regen + tests.
-4. **Scale** to the remaining primitives in staged batches (each regen + dev-tests).
-5. `docs/PIPELINE.md` stage doc; automated regression guards (the library / `--no-prelude`
-   cases, currently only manually checked); retire the residual eta special-case; final
-   verification (binary size + regen time within noise of baseline).
+1. ~~**Ship the `cons` slice**~~ — **DONE (commit 0a18580).**
+2. ~~**Expand Batch A — remaining fixed-arity prims**~~ — **DONE (commit 4303bf0).** 30 prims
+   moved to `*integrable*`; direct regen converged; the legacy fixed-arity eta is retired;
+   18/18 dev-tests green. (See the Batch A note at the top for membership and the deferred
+   `eqv?`/optional-arity ops.)
+3. **Batch B — variadic + optional-arity** (the two sub-groups in the resumption note above):
+   the expander-folded family (`+ - * = < eq? eqv? string-append`) and the R7RS optional-arity
+   ops (`make-*`, `substring`, `string-copy`, `string=?`). Keep the expander fold per D2 for
+   literal n-ary calls; add integrable entries so value/`apply` position works; finish
+   retiring `prim-as-value`. Regen + tests.
+4. **Scale** to any remaining reserved prims (I/O `display`/`write`/`newline`/`read-all-stdin`,
+   REPL state ops) if they should be first-class; leave the internal `%`-ops reserved.
+5. `docs/PIPELINE.md` stage doc (**done**, commit 1a906f5); automated regression guards (the
+   library / `--no-prelude` cases, currently only manually checked); final verification
+   (binary size + regen time within noise of baseline); `make catalogue` refresh.
 
 **How to resume:** `git switch feat/first-class-primitives`; re-baseline with `make &&
 ./run-dev-tests.sh` (green — bootstrap now matches source); then do state 2 (expand Batch A).
