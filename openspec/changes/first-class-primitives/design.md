@@ -1,3 +1,42 @@
+## Resumption state (2026-07-18) — paused mid-implementation
+
+**Branch:** `feat/first-class-primitives` (off `main` @ the D0-decision commit). `main` is
+clean of implementation code. Work is Chez-driver-verified but NOT yet regen'd/shipped.
+
+**Done & verified (Chez driver only — no regen yet):** the intrinsic-floor mechanism for
+`cons`.
+- `src/parse.ss`: `cons` removed from `*prims*`, `%cons` added; new `*integrable*` table
+  (`(cons %cons 2)`), `integrable-lookup`/`integrable?`; `scope-resolve` treats integrables
+  like prims (leaves the symbol); new **`inline-primitives`** pass + `eta-integrable`/
+  `fresh-syms`; `*prim-eta-arity*` no longer lists `cons`.
+- `src/emit.ss`: prim-table `(cons "rt_cons")` → `(%cons "rt_cons")`.
+- `src/core.ss`: `inline-primitives` wired into `compile-forms` AND
+  `compile-program-with-imports` (after rename/resolve, before `recognize-let`);
+  `repl-lower-form` prep wraps it too; `compute-known` unions `(map car *integrable*)`.
+- Verified: direct `(cons a b)` → bare `@rt_cons`; `(map cons …)` eta works; shadowing
+  works whole-program; **library-without-`(scheme base)` and `--no-prelude` both work**
+  (the two spike failures); `read-all-tests` 6/6 → **no Chez host shim needed**.
+
+**Key design win vs the spike:** the intrinsic floor keeps `%`-ops out of prelude *source*,
+so the dual-host shim (task 1.3) is unnecessary.
+
+**Next states (in order):**
+1. **Ship the `cons` slice** — staged 2-regen bootstrap (stage 1: add `%cons` as a
+   `*prims*` synonym while `cons` still recognized, regen so the committed seed learns
+   `%cons`; stage 2: the current source, regen), then full `./run-dev-tests.sh`. This proves
+   self-hosting. (The spike proved convergence for the analogous shape.)
+2. **Batch B — `+`/variadic**: add a fold/identity rule to `*integrable*` and teach
+   `inline-primitives` to fold a direct n-ary `(+ …)` into nested `(primcall %add …)`
+   (or keep the expander fold per D2 and only eta variadic value-use). Value/`apply` use is
+   the eta lambda over a fold. 2-regen + tests.
+3. **Scale** to the remaining primitives in staged batches (each a 2-regen + dev-tests).
+4. `docs/PIPELINE.md` stage doc; automated regression guards (the library / `--no-prelude`
+   cases, currently only manually checked); retire the residual eta special-case; final
+   verification (binary size + regen time within noise of baseline).
+
+**How to resume:** `git switch feat/first-class-primitives`; re-baseline with `make &&
+./run-dev-tests.sh` (should be green — code changes are inert until regen); then do state 1.
+
 ## Context
 
 Grounded in the archived `primitives-first-class-spike`, which took `cons` and `+` through
