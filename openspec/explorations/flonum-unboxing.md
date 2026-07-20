@@ -250,3 +250,11 @@ one, plus producer→consumer fusion that keeps a flonum result unboxed when it
 feeds another flonum op, boxing at escapes. Scope it to prove out the seam and the
 byte-identity guarantee on `demos/mandelbrot.scm`, with the measurement spike as
 its task 0.
+
+**Shipped** as the `flonum-unboxing` change (guarded flonum regions in
+`src/emit.ss`, with a loop-var flonum fixpoint for the evidence source). It
+REVISES the `aot-codegen` "no flonum inline path" requirement (superseding
+`inexact-numbers` design D2's clause of the same name) and achieved ~66% fewer GC
+collections / ~2.4× on the heavy mandelbrot render while keeping the compiler's
+own IR byte-identical (`make regen` clean). Rungs 2 (loop-carried back-edge
+unboxing) and 3 (unboxed flonum arrays) remain future work.

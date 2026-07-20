@@ -136,6 +136,24 @@ convention so tail calls can be `musttail`, Boehm GC. Verified end to end by
 `demos/run-tests.sh` (recursion, allocation, captured-mutable boxing, and 10M-iteration
 tail recursion in bounded stack).
 
+**Flonum f64 regions (`emit.ss`, change: flonum-unboxing).** The emitter is otherwise
+monotyped — every SSA value is an `i64` tagged word — but a *second* machine type, native
+`double`, appears inside one local peephole. A "flonum region" is a maximal tree of the binary
+numeric primcalls (`%+ %- %* %= %<`) that is statically flonum-**evident**: some operand traces
+to an inexact literal, `exact->inexact`, or a flonum-stable variable (a small least-fixpoint
+over a code block's `self-app` back-edges marks loop params like `zx`, while excluding the
+integer counter `i`). Such a region is emitted as a guarded pair of arms joined by a phi — a
+**fast** arm that unboxes each non-literal leaf (`flo_val` load), computes the whole tree in
+native `fadd`/`fmul`/`fcmp` with immediate `double` literals, and boxes **once** at the arith
+root (`rt_make_flonum`); and a **slow** arm that is exactly the existing per-op boxed lowering,
+reached (via an `rt_flonum_p` guard) whenever a leaf is not actually a flonum. So the `rt_*`
+runtime stays the single definition of numeric semantics, intra-expression intermediates never
+allocate on the hot path (mandelbrot: ~66% fewer GC collections), and — because a region never
+fires for flonum-free code — the compiler's own IR is byte-identical (`make regen` stays clean).
+This is intra-*expression* only (Option A): the `let`-temps that `expand-compare` introduces and
+the `tailcc` back-edge remain escape points that box, so it needs neither ANF nor a
+calling-convention change.
+
 ---
 
 ## How the passes are written: nanopass vs. hand-rolled `match`

@@ -111,6 +111,7 @@ run3 qqunq     demos/qq-unquote.scm       '(a 2 b)'                 # quasiquote
 run3 qqspl     demos/qq-splice.scm        '(0 1 2 3)'               # quasiquote: unquote-splicing -> append
 run3 qqplain   demos/qq-plain.scm         '(a b c)'                 # quasiquote: constant (no unquotes)
 run3 qqnest    demos/qq-nested.scm        a                         # quasiquote: nested, inner intact
+run3 flonumunbox demos/flonum-unbox.scm  '(5.0 15.0 3.0 #t)'       # flonum f64-region fast path byte-identical across aot/jit/bitcode (change: flonum-unboxing)
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"

@@ -27,7 +27,7 @@
 (define (fresh-temp) (set! temp-n (+ temp-n 1)) (string-append "%t" (number->string temp-n)))
 (define (fresh-bb base) (set! lbl-n (+ lbl-n 1)) (string-append base (number->string lbl-n)))
 (define (start-bb name) (emit! (string-append name ":")) (set! current-bb name))
-(define (reset-emit!) (set! temp-n 0) (set! lbl-n 0) (set! emit-lines '()) (set! current-bb "entry"))
+(define (reset-emit!) (set! temp-n 0) (set! lbl-n 0) (set! emit-lines '()) (set! current-bb "entry") (set! *fset* '()))
 
 ;; --- private byte-array constants (module-level globals, reset per program) ---
 ;; Symbol names and string literals both become private constant globals holding
@@ -250,7 +250,11 @@
             [env2 (append (map (lambda (b op) (cons (car b) op)) binds ops) env)])
        (ev body env2 cp tc?))]
     [(primcall ,op . ,args)
-     (emit-primcall op (map (lambda (a) (ev a env cp tc?)) args))]
+     ;; A flonum-evident numeric region is unboxed in native f64 (change:
+     ;; flonum-unboxing); otherwise the existing per-op lowering, byte-identical.
+     (if (flonum-region-root? op args *fset*)
+         (emit-flonum-region e env cp tc?)
+         (emit-primcall op (map (lambda (a) (ev a env cp tc?)) args)))]
     [(make-closure ,label ,caps)
      (emit-make-closure label (map (lambda (c) (ev c env cp tc?)) caps))]
     [(closure-block ,entries ,body)
@@ -396,6 +400,211 @@
         (let ([r (fresh-temp)])
           (emit! (string-append r " = phi i64 [ " fv ", %" fbb " ], [ " sv ", %" slow " ]"))
           r)))))
+
+;; --- flonum unboxing: intra-expression f64 regions (change: flonum-unboxing) ---
+;; Rung 1 / Option A.  A "flonum region" is a maximal tree of the binary numeric
+;; primcalls (%+ %- %* %= %<, already reduced from n-ary/`> >= <=` in expand.ss)
+;; whose value is flonum-EVIDENT: some operand traces to a flonum source (an
+;; inexact literal, `exact->inexact`, or a flonum-stable variable).  Such a region
+;; is emitted as a GUARDED pair of arms joined by a phi:
+;;   fast: unbox each non-literal leaf (flo_val = load), compute the whole tree in
+;;         native f64 (fadd/fsub/fmul, fcmp+select for compares), immediate doubles
+;;         for literal leaves, and box ONCE at the arith root (rt_make_flonum) --
+;;         so the 7-of-9 intra-expression boxes and the per-iteration rt_flonum_lit
+;;         allocations both vanish on the hot path.
+;;   slow: the EXISTING boxed lowering (emit-inline-arith per node), reached when
+;;         any guarded leaf is not actually a flonum at run time.
+;; The runtime rt_* primitives stay the single definition of numeric semantics: the
+;; slow arm is exactly today's code, so results are identical for every input.  The
+;; region NEVER fires for flonum-free code (flonum-region-root? is #f), so the
+;; compiler's own IR and non-flonum demos are byte-identical (make regen stays
+;; clean); D4: loop-carried flonums still cross the tailcc back-edge boxed.
+
+;; *fset*: local names proven/assumed flonum in the current scope (the fixpoint's
+;; flonum-stable params of the enclosing code block).  Empty for flonum-free code,
+;; so it never perturbs existing emission.
+(define *fset* '())
+
+(define (flonum-value? d) (and (real? d) (not (exact? d))))   ; an inexact real literal
+(define (flonum-const? e) (match e [(const ,d) (flonum-value? d)] [,_ #f]))
+
+;; flonum-source?: is expr e statically flonum-EVIDENT under flonum-var set fs?
+;; Contagion: an arith op is flonum whenever EITHER operand is (the other, in a
+;; well-typed program, is a number, so numeric contagion yields a flonum).  This is
+;; only EVIDENCE (it decides whether to specialize); the runtime guard makes the
+;; fast arm sound regardless.
+(define (flo-src? e fs)
+  (match e
+    [(const ,d) (flonum-value? d)]
+    [(local ,x) (and (memq x fs) #t)]
+    [(primcall ,op . ,args)
+     (cond
+       [(eq? op '%exact->inexact) #t]
+       [(and (memq op '(%+ %- %*)) (pair? args) (pair? (cdr args)) (null? (cddr args)))
+        (or (flo-src? (car args) fs) (flo-src? (cadr args) fs))]
+       [else #f])]
+    [,_ #f]))
+
+;; A binary numeric primcall is a flonum REGION ROOT when an operand is flonum-src.
+(define (flonum-region-root? op args fs)
+  (and (assq op inline-arith-table)
+       (pair? args) (pair? (cdr args)) (null? (cddr args))
+       (or (flo-src? (car args) fs) (flo-src? (cadr args) fs))))
+
+;; A region-INTERNAL node: a binary arith primcall (%+ %- %*) that is itself
+;; flonum-src (so it belongs to the region and is recursed into, not a leaf).
+(define (region-internal? e)
+  (match e
+    [(primcall ,op . ,args)
+     (and (memq op '(%+ %- %*)) (pair? args) (pair? (cdr args)) (null? (cddr args))
+          (flo-src? e *fset*))]
+    [,_ #f]))
+
+;; Distinct non-literal leaves of a region, in left-to-right source order (each
+;; guarded + evaluated once).  Literal-flonum operands are NOT leaves (immediate
+;; doubles in the fast arm; ev'd in the slow arm only).
+(define (region-leaf-list root)
+  (let ([acc '()])
+    (define (add! lf)
+      (unless (or (flonum-const? lf) (member lf acc)) (set! acc (cons lf acc))))
+    (define (walk node)
+      (match node
+        [(primcall ,op ,a ,b)
+         (if (region-internal? a) (walk a) (add! a))
+         (if (region-internal? b) (walk b) (add! b))]))
+    (walk root)
+    (reverse acc)))
+
+;; Emit an unbox: i64 flonum -> native double (inline flo_val; safe post-guard).
+(define (unbox-flonum v)
+  (let* ([b (fresh-temp)] [p (fresh-temp)] [g (fresh-temp)] [d (fresh-temp)])
+    (emit! (string-append b " = and i64 " v ", -8"))
+    (emit! (string-append p " = inttoptr i64 " b " to ptr"))
+    (emit! (string-append g " = getelementptr i64, ptr " p ", i64 1"))
+    (emit! (string-append d " = load double, ptr " g))
+    d))
+
+;; Emit the region tree in native f64; return a `double` operand.  A region-internal
+;; node lowers to fadd/fsub/fmul; a literal leaf to an immediate double; a
+;; non-literal leaf to its (pre-evaluated) i64 unboxed.
+(define (region->f64 node leaf-map)
+  (cond
+    [(region-internal? node)
+     (match node
+       [(primcall ,op ,a ,b)
+        (let* ([da (region->f64 a leaf-map)]
+               [db (region->f64 b leaf-map)]
+               [instr (cond [(eq? op '%+) "fadd"] [(eq? op '%-) "fsub"] [else "fmul"])]
+               [t (fresh-temp)])
+          (emit! (string-append t " = " instr " double " da ", " db))
+          t)])]
+    [(flonum-const? node) (match node [(const ,d) (number->string d)])]
+    [else (unbox-flonum (cdr (assoc node leaf-map)))]))
+
+;; Emit the region tree in the EXISTING boxed lowering; return an i64 operand.
+;; Literal leaves are ev'd here (so rt_flonum_lit runs only on the slow arm).
+(define (region->i64-slow node leaf-map env cp tc?)
+  (cond
+    [(region-internal? node)
+     (match node
+       [(primcall ,op ,a ,b)
+        (let* ([oa (region->i64-slow a leaf-map env cp tc?)]
+               [ob (region->i64-slow b leaf-map env cp tc?)])
+          (emit-inline-arith (assq op inline-arith-table) oa ob))])]
+    [(flonum-const? node) (ev node env cp tc?)]
+    [else (cdr (assoc node leaf-map))]))
+
+;; Emit a whole flonum region rooted at `root` (a binary numeric primcall).
+(define (emit-flonum-region root env cp tc?)
+  (let* ([op     (cadr root)]
+         [cmp?   (and (memq op '(%= %<)) #t)]
+         [leaves (region-leaf-list root)]
+         ;; pre-evaluate each distinct non-literal leaf ONCE, in source order
+         [leaf-ops (map (lambda (lf) (ev lf env cp tc?)) leaves)]
+         [leaf-map (map cons leaves leaf-ops)])
+    ;; fast-arm value: whole tree in f64; arith root boxes, compare root selects
+    (define (emit-fast)
+      (if cmp?
+          (match root
+            [(primcall ,op2 ,a ,b)
+             (let* ([da (region->f64 a leaf-map)] [db (region->f64 b leaf-map)]
+                    [pred (if (eq? op2 '%=) "oeq" "olt")]
+                    [c (fresh-temp)] [r (fresh-temp)])
+               (emit! (string-append c " = fcmp " pred " double " da ", " db))
+               (emit! (string-append r " = select i1 " c ", i64 257, i64 1"))
+               r)])
+          (let* ([d (region->f64 root leaf-map)] [r (fresh-temp)])
+            (emit! (string-append r " = call i64 @rt_make_flonum(double " d ")"))
+            r)))
+    (if (null? leaves)
+        (emit-fast)                              ; all-literal: always flonum, no guard
+        (let* ([conds (map (lambda (lo)
+                             (let* ([p (fresh-temp)] [c (fresh-temp)])
+                               (emit! (string-append p " = call i64 @rt_flonum_p(i64 " lo ")"))
+                               (emit! (string-append c " = icmp ne i64 " p ", 1"))
+                               c))
+                           leaf-ops)]
+               [allc (let loop ([acc (car conds)] [rest (cdr conds)])
+                       (if (null? rest) acc
+                           (let ([t (fresh-temp)])
+                             (emit! (string-append t " = and i1 " acc ", " (car rest)))
+                             (loop t (cdr rest)))))]
+               [ff (fresh-bb "flofast")] [fs (fresh-bb "floslow")] [fm (fresh-bb "flomerge")])
+          (emit! (string-append "br i1 " allc ", label %" ff ", label %" fs))
+          (start-bb ff)
+          (let* ([fv (emit-fast)] [fbb current-bb])
+            (emit! (string-append "br label %" fm))
+            (start-bb fs)
+            (let* ([sv (region->i64-slow root leaf-map env cp tc?)] [sbb current-bb])
+              (emit! (string-append "br label %" fm))
+              (start-bb fm)
+              (let ([r (fresh-temp)])
+                (emit! (string-append r " = phi i64 [ " fv ", %" fbb " ], [ " sv ", %" sbb " ]"))
+                r)))))))
+
+;; Least-fixpoint over a code block's self-calls: which fixed params are
+;; flonum-stable?  Seeded by flonum literals in the back-edge argument expressions
+;; and grown by contagion; the iteration counter (updated by (+ i 1), no flonum
+;; source) is correctly excluded, so its arithmetic keeps the fixnum fast path.
+(define (collect-self-app-args body label)
+  (let ([acc '()])
+    (define (S e)
+      (match e
+        [(const ,d) (void)]
+        [(local ,x) (void)]
+        [(free-ref ,i) (void)]
+        [(global-ref ,s) (void)]
+        [(global-set! ,s ,e2) (S e2)]
+        [(if ,a ,b ,c) (S a) (S b) (S c)]
+        [(seq ,a ,b) (S a) (S b)]
+        [(let ,binds ,body2) (for-each (lambda (b) (S (cadr b))) binds) (S body2)]
+        [(primcall ,op . ,args) (for-each S args)]
+        [(make-closure ,l ,caps) (for-each S caps)]
+        [(closure-block ,entries ,body2)
+         (for-each (lambda (en) (for-each S (caddr en))) entries) (S body2)]
+        [(app ,f ,args) (S f) (for-each S args)]
+        [(apply-app ,f ,args) (S f) (for-each S args)]
+        [(self-app ,l ,args)
+         (when (equal? l label) (set! acc (cons args acc)))
+         (for-each S args)]))
+    (S body)
+    acc))
+
+(define (compute-flonum-params fixed body label)
+  (let ([selfargs (collect-self-app-args body label)])
+    (if (null? selfargs)
+        '()
+        (letrec ([all-flo-at?
+                  (lambda (sas i f)
+                    (cond [(null? sas) #t]
+                          [(flo-src? (list-ref (car sas) i) f) (all-flo-at? (cdr sas) i f)]
+                          [else #f]))])
+          (let loop ([f '()])
+            (let ([f2 (let pos ([ps fixed] [i 0] [acc '()])
+                        (if (null? ps) (reverse acc)
+                            (pos (cdr ps) (+ i 1)
+                                 (if (all-flo-at? selfargs i f) (cons (car ps) acc) acc))))])
+              (if (= (length f2) (length f)) f2 (loop f2))))))))
 
 (define (emit-primcall op ops)
   ;; %run-guarded is special: it passes the module's own ccc trampoline @__apply0
@@ -611,6 +820,7 @@
    "declare i64 @rt_num_eq(i64, i64)\n"
    "declare i64 @rt_lt(i64, i64)\n"
    "declare i64 @rt_flonum_lit(ptr)\n"
+   "declare i64 @rt_make_flonum(double)\n"
    "declare i64 @rt_string_to_flonum(i64)\n"
    "declare i64 @rt_flonum_to_string(i64)\n"
    "declare i64 @rt_flonum_p(i64)\n"
@@ -729,8 +939,14 @@
        (emit-arity-check f rest)                    ; then positioned in the ok block
        (let ([env (if rest
                       (cons (cons rest (emit-build-rest f k)) env0)  ; hot path: fixed only
-                      env0)])
-         (et body env "%self" #t))
+                      env0)]
+             [saved-fset *fset*])
+         ;; flonum-stable params of THIS code block drive f64 region selection in
+         ;; its body (change: flonum-unboxing).  Empty for flonum-free code, so
+         ;; emission is unchanged there.  Save/restore keeps each def independent.
+         (set! *fset* (compute-flonum-params fixed body label))
+         (et body env "%self" #t)
+         (set! *fset* saved-fset))
        (string-append "define fastcc i64 " (label-operand label) "(" argdecls ") {\n"
                       (lines->string (reverse emit-lines)) "}\n\n"))]))
 

@@ -165,6 +165,7 @@ check mapmulti demos/map-multi-list.scm '(11 22 33)'  # variadic multi-list map 
 echo "inexact numbers demos"
 check flonumarith demos/flonum-arith.scm '(3.0 1.0 4.0 3.5 2 2.5 #t #t #t)'  # flonum literals, mixed-arith contagion, real division, tower comparison
 check flonumpred  demos/flonum-predicates.scm '(#t #f #f #t #t #f #t #t #t 3.0 3 #t #f)'  # exact?/inexact?/integer?/number?/flonum? + exact<->inexact + eqv? by value
+check flonumunbox demos/flonum-unbox.scm '(5.0 15.0 3.0 #t)'  # f64 region fast path: accumulator loop (fixpoint), fused arith, vector escape, comparison region, mixed-operand guard fallback (change: flonum-unboxing)
 check modulo      demos/modulo.scm '(2 0 2 -2 -1)'  # flooring modulo (divisor sign) vs truncating remainder
 check doloop      demos/do-loop.scm '(10 5 4)'  # R7RS do: parallel bindings, no-step binding, body command
 check writechar   demos/write-char.scm "$(printf 'hi \316\273\ndone')"  # write-char UTF-8 bytes (incl. 2-byte λ) + final value
