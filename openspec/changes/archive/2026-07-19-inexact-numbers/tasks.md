@@ -115,7 +115,7 @@
 
 ## 9. Spec sync + docs
 
-- [ ] 9.1 After implementation and green tests, sync the deltas in
+- [x] 9.1 After implementation and green tests, sync the deltas in
       `specs/core-language/spec.md` and `specs/aot-codegen/spec.md` into
       `openspec/specs/**` (via the sync/archive workflow).
 - [x] 9.2 Update the README: numeric-tower bullet (fixnums-only → fixnums +
