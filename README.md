@@ -201,9 +201,11 @@ read (host) → prepend prelude → collect-toplevel → expand → parse+rename
 
 Values are tagged 64-bit words. All 8 tags are assigned: fixnum, boolean, nil, pair,
 closure, box, symbol (interned), and an extended/header-word object (tag 7) hosting strings
-(UTF-8). The boolean tag `001` is a misc-immediate family (a 5-bit subtype selects boolean
-vs. character vs. reserved singletons), so characters are **immediate** words carrying their
-Unicode codepoint — no heap object, no interning. Every Scheme function shares one `tailcc`
+(UTF-8), vectors, bytevectors, records, hash tables, multiple-values bundles, and **flonums**
+(inexact reals — a boxed IEEE double, `HDR_FLONUM`; a double needs all 64 bits, so it cannot
+be an immediate). The boolean tag `001` is a misc-immediate family (a 5-bit subtype selects
+boolean vs. character vs. reserved singletons), so characters are **immediate** words carrying
+their Unicode codepoint — no heap object, no interning. Every Scheme function shares one `tailcc`
 prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `musttail`
 (bounded stack verified at 10M iterations).
 
@@ -243,11 +245,12 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
   `#u8(...)` syntax); **hash tables** (mutable, `equal?`-keyed, auto-growing — SRFI-69 subset
   built on vectors + a `%hash` primitive); **records** (R7RS `define-record-type` — disjoint
   types, constructor/predicate/accessors/mutators, identity equality, opaque `#<record …>`).
-- Primitives: `+ - * = < cons car cdr null? pair? eq? eqv? equal? not char->integer
-  integer->char string-length string-ref substring string->symbol string=? string-append
-  symbol->string list->string make-string string-set! string-copy make-bytevector
-  bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector?`, and `display`
-  (writes any datum in *display* style — strings unquoted, characters raw — to stdout).
+- Primitives: `+ - * / = < cons car cdr null? pair? eq? eqv? equal? not quotient remainder
+  modulo char->integer integer->char string-length string-ref substring string->symbol
+  string=? string-append symbol->string list->string make-string string-set! string-copy
+  make-bytevector bytevector-u8-ref bytevector-u8-set! bytevector-length bytevector?
+  number? real? integer? exact? inexact? flonum? exact->inexact inexact->exact`, the I/O
+  ops `display` / `write` / `write-char` / `newline`, and the `do` iteration macro.
 - C runtime under Boehm GC; a tag-walking value printer shared by `display` (display
   style) and the final-value printer (write style: quoted strings, `#\`-prefixed chars).
 
@@ -292,8 +295,11 @@ prototype `(self, argc, a0…a{K-1}, overflow)`, so tail calls are emitted `must
 - **Macros (follow-ons)** — `let-syntax`/`letrec-syntax` (local macros), procedural /
   `syntax-case` macros, and full referential-transparency hygiene (the current expander is
   hygienic for macro-introduced identifiers only).
-- **Numeric tower** — fixnums only; no bignums/flonums/rationals, no `quotient`/`remainder`/
-  `/`, no overflow handling.
+- **Numeric tower** — fixnums + inexact reals (flonums), with fixnum/flonum contagion on
+  `+ - * /` and the comparisons, real division `/`, and `modulo`; still no bignums or exact
+  rationals, and no overflow promotion (fixnums wrap). Flonums are boxed doubles today;
+  keeping intermediates unboxed in registers is a planned codegen follow-on (see
+  `openspec/explorations/flonum-unboxing.md`).
 - **Control**: `call/cc`, `dynamic-wind`; and the rest of the R7RS exception system beyond the
   shipped subset — `with-exception-handler` and `raise-continuable` (their
   non-unwinding/resumable semantics need `call/cc`), `read-error?`/`file-error?`.

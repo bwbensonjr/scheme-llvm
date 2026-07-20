@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include <setjmp.h>
 #include <gc/gc.h>
 
@@ -71,6 +72,11 @@ char rt_trap_msg[128] = "";
                             * multiple-values).  Disjoint wrapper so `values` of 0 or >=2 args
                             * is never confused with a real single value; consumed only by
                             * call-with-values.  A unary `(values x)` returns x, not a bundle. */
+#define HDR_FLONUM      8  /* { HDR_FLONUM, double } -- an inexact real (change: inexact-numbers).
+                            * A double needs all 64 bits, so a flonum cannot be an immediate;
+                            * the box is atomic (no pointers inside).  All numeric semantics
+                            * live in the rt_* arithmetic, so the emitter's inline fixnum fast
+                            * path routes any non-fixnum operand here automatically. */
 
 #define FIX(n)     ((val)(((intptr_t)(n)) << 3))
 #define UNFIX(v)   (((intptr_t)(v)) >> 3)
@@ -110,6 +116,41 @@ val rt_box(val v)          { val *p = (val *)GC_MALLOC(sizeof(val)); p[0] = v; r
 val rt_unbox(val b)        { return as_ptr(b)[0]; }
 val rt_set_box(val b, val v) { as_ptr(b)[0] = v; return NIL_V; }
 
+/* --- flonums (tag-7 HDR_FLONUM: { HDR_FLONUM, double }) ------------------
+ * memcpy is used for the double<->word type-punning (well-defined, no strict-
+ * aliasing UB).  is_flonum reads the header directly (as_ptr(v)[0]) so it needs
+ * no forward reference to ext_hdr, which is defined later. */
+static int    is_flonum(val v) { return tag_of(v) == TAG_EXT && as_ptr(v)[0] == HDR_FLONUM; }
+static double flo_val(val v)   { double d; memcpy(&d, &as_ptr(v)[1], sizeof d); return d; }
+val rt_make_flonum(double d) {
+  val *p = (val *)GC_MALLOC_ATOMIC(2 * sizeof(val));   /* no pointers inside */
+  p[0] = (val)HDR_FLONUM;
+  memcpy(&p[1], &d, sizeof d);
+  return tag_ptr(p, TAG_EXT);
+}
+static int    is_number(val v) { return tag_of(v) == TAG_FIXNUM || is_flonum(v); }
+static double to_double(val v) { return tag_of(v) == TAG_FIXNUM ? (double)UNFIX(v) : flo_val(v); }
+
+/* Format a flonum as the shortest decimal that reads back exactly (the classic
+ * increase-precision-until-round-trips loop), ALWAYS carrying a '.' or exponent
+ * so the reader never mistakes it for an integer.  Non-finite values render as
+ * +inf.0 / -inf.0 / +nan.0.  buf must be >= 40 bytes; returns the byte length. */
+static int flonum_format(double d, char *buf) {
+  if (isnan(d)) { memcpy(buf, "+nan.0", 7); return 6; }
+  if (isinf(d)) { memcpy(buf, d < 0 ? "-inf.0" : "+inf.0", 7); return 6; }
+  int len = 0;
+  for (int prec = 1; prec <= 17; prec++) {
+    len = snprintf(buf, 32, "%.*g", prec, d);
+    if (strtod(buf, NULL) == d) break;
+  }
+  if (!strpbrk(buf, ".eEnN")) { buf[len++] = '.'; buf[len++] = '0'; buf[len] = '\0'; }
+  return len;
+}
+/* Build a flonum from a C string literal (used by the compiler for inexact
+ * literals -- one alloc, no intermediate scheme string).  strtod is correctly
+ * rounded, so it recovers exactly the double the printer produced. */
+val rt_flonum_lit(const char *s) { return rt_make_flonum(strtod(s, NULL)); }
+
 /* --- arithmetic and predicates ----------------------------------------- */
 /* Report a fatal runtime error the same way rt_arity_error does: record the
  * message, print it, and longjmp back to the REPL host if one is installed
@@ -121,9 +162,39 @@ static void rt_fatal(const char *msg) {
   exit(1);
 }
 
-val rt_add(val a, val b) { return FIX(UNFIX(a) + UNFIX(b)); }
-val rt_sub(val a, val b) { return FIX(UNFIX(a) - UNFIX(b)); }
-val rt_mul(val a, val b) { return FIX(UNFIX(a) * UNFIX(b)); }
+/* Two-type numeric tower (change: inexact-numbers).  Both-fixnum keeps the exact
+ * fixnum path unchanged; any flonum operand promotes to double arithmetic
+ * (contagion) and returns a flonum; a non-number operand traps. */
+val rt_add(val a, val b) {
+  if (tag_of(a) == TAG_FIXNUM && tag_of(b) == TAG_FIXNUM) return FIX(UNFIX(a) + UNFIX(b));
+  if (is_number(a) && is_number(b)) return rt_make_flonum(to_double(a) + to_double(b));
+  rt_fatal("+: not a number"); return NIL_V;
+}
+val rt_sub(val a, val b) {
+  if (tag_of(a) == TAG_FIXNUM && tag_of(b) == TAG_FIXNUM) return FIX(UNFIX(a) - UNFIX(b));
+  if (is_number(a) && is_number(b)) return rt_make_flonum(to_double(a) - to_double(b));
+  rt_fatal("-: not a number"); return NIL_V;
+}
+val rt_mul(val a, val b) {
+  if (tag_of(a) == TAG_FIXNUM && tag_of(b) == TAG_FIXNUM) return FIX(UNFIX(a) * UNFIX(b));
+  if (is_number(a) && is_number(b)) return rt_make_flonum(to_double(a) * to_double(b));
+  rt_fatal("*: not a number"); return NIL_V;
+}
+/* real division.  Any inexact operand -> flonum.  exact/exact -> exact fixnum
+ * when it divides evenly, else a flonum.  Division by an EXACT zero traps
+ * (even when the numerator is inexact); an inexact zero divisor follows IEEE
+ * (inf/nan), which the printer renders safely. */
+val rt_div(val a, val b) {
+  if (!is_number(a) || !is_number(b)) { rt_fatal("/: not a number"); return NIL_V; }
+  int bfix = tag_of(b) == TAG_FIXNUM;
+  if (bfix && UNFIX(b) == 0) { rt_fatal("division by zero: /"); return NIL_V; }
+  if (tag_of(a) == TAG_FIXNUM && bfix) {
+    intptr_t da = UNFIX(a), db = UNFIX(b);
+    if (da % db == 0) return FIX(da / db);
+    return rt_make_flonum((double)da / (double)db);
+  }
+  return rt_make_flonum(to_double(a) / to_double(b));
+}
 /* quotient/remainder: C integer division truncates toward zero, which is
  * exactly R7RS quotient/remainder.  Division by zero traps. */
 val rt_quotient(val a, val b) {
@@ -136,17 +207,46 @@ val rt_remainder(val a, val b) {
   if (d == 0) rt_fatal("division by zero: remainder");
   return FIX(UNFIX(a) % d);
 }
-val rt_num_eq(val a, val b) { return truthy(UNFIX(a) == UNFIX(b)); }
-val rt_lt(val a, val b)     { return truthy(UNFIX(a) <  UNFIX(b)); }
+/* modulo: flooring remainder -- the result takes the sign of the divisor
+ * (unlike remainder, which takes the dividend's).  Distinct name/semantics. */
+val rt_modulo(val a, val b) {
+  if (!is_number(a) || !is_number(b)) { rt_fatal("modulo: not a number"); return NIL_V; }
+  if (tag_of(a) == TAG_FIXNUM && tag_of(b) == TAG_FIXNUM) {
+    intptr_t da = UNFIX(a), db = UNFIX(b);
+    if (db == 0) { rt_fatal("division by zero: modulo"); return NIL_V; }
+    intptr_t r = da % db;
+    if (r != 0 && ((r < 0) != (db < 0))) r += db;
+    return FIX(r);
+  }
+  double da = to_double(a), db = to_double(b);
+  if (db == 0) { rt_fatal("division by zero: modulo"); return NIL_V; }
+  double r = fmod(da, db);
+  if (r != 0 && ((r < 0) != (db < 0))) r += db;
+  return rt_make_flonum(r);
+}
+val rt_num_eq(val a, val b) {
+  if (tag_of(a) == TAG_FIXNUM && tag_of(b) == TAG_FIXNUM) return truthy(UNFIX(a) == UNFIX(b));
+  if (is_number(a) && is_number(b)) return truthy(to_double(a) == to_double(b));
+  rt_fatal("=: not a number"); return NIL_V;
+}
+val rt_lt(val a, val b) {
+  if (tag_of(a) == TAG_FIXNUM && tag_of(b) == TAG_FIXNUM) return truthy(UNFIX(a) < UNFIX(b));
+  if (is_number(a) && is_number(b)) return truthy(to_double(a) < to_double(b));
+  rt_fatal("<: not a number"); return NIL_V;
+}
 val rt_null_p(val v)       { return truthy(v == NIL_V); }
 val rt_pair_p(val v)       { return truthy(tag_of(v) == TAG_PAIR); }
 val rt_eq_p(val a, val b)  { return truthy(a == b); }
-/* eqv?: same-object identity.  == suffices because every value eqv? can
- * distinguish is immediate (fixnums, booleans, characters -- equal codepoints
- * are the same immediate word) or interned (symbols); this diverges from
- * rt_eq_p only once non-immediate numbers (flonums/bignums) need value
- * comparison. */
-val rt_eqv_p(val a, val b) { return truthy(a == b); }
+/* eqv?: same-object identity, plus flonum value comparison (change:
+ * inexact-numbers).  == covers every immediate (fixnums, booleans, characters)
+ * and interned symbols; two DISTINCT flonum boxes with the same value are eqv?
+ * by value.  Stays #f across the exact/inexact boundary (a fixnum and a flonum
+ * are never eqv?, though `=` compares them numerically). */
+val rt_eqv_p(val a, val b) {
+  if (a == b) return TRUE_V;
+  if (is_flonum(a) && is_flonum(b)) return truthy(flo_val(a) == flo_val(b));
+  return FALSE_V;
+}
 val rt_not(val x)          { return truthy(x == FALSE_V); }  /* only #f is false */
 
 /* --- variadic / apply support ------------------------------------------ */
@@ -271,6 +371,17 @@ static const char *str_bytes(val v)  { return (const char *)as_ptr(v)[3]; }
  * internal helpers above (change: path-a-embedding). */
 intptr_t    rt_string_len(val v)   { return str_len(v); }
 const char *rt_string_bytes(val v) { return str_bytes(v); }
+
+/* flonum <-> string (change: inexact-numbers).  number->string routes flonums
+ * here; the reader routes a flonum token here.  strtod is correctly rounded and
+ * flonum_format is shortest-round-trippable, so string->flonum->string and
+ * flonum->string->flonum both round-trip. */
+val rt_flonum_to_string(val fv) {
+  char buf[40];
+  int n = flonum_format(flo_val(fv), buf);
+  return rt_make_string(buf, n);
+}
+val rt_string_to_flonum(val s) { return rt_make_flonum(strtod(str_bytes(s), NULL)); }
 
 /* char: an immediate in the misc-immediate family (subtype SUB_CHAR), the full
  * Unicode scalar value carried in bits 8+.  No heap allocation and no interning
@@ -598,6 +709,15 @@ val rt_newline(void) {
   return NIL_V;
 }
 
+/* write-char: emit one character's UTF-8 bytes to stdout (change:
+ * inexact-numbers -- mandelbrot's per-cell output).  Returns unspecified. */
+val rt_write_char(val c) {
+  unsigned char buf[4];
+  int n = utf8_encode(CHAR_CP(c), buf);
+  fwrite(buf, 1, (size_t)n, stdout);
+  return NIL_V;
+}
+
 /* --- vectors (tag-7 HDR_VECTOR: { HDR_VECTOR, length, elem... }) --------- */
 static intptr_t vec_len(val v) { return (intptr_t)as_ptr(v)[1]; }
 val rt_make_vector(val k, val fill) {
@@ -679,6 +799,8 @@ static uintptr_t hash_word(val v, int depth) {
         }
         return h;
       }
+      if (ext_hdr(v) == HDR_FLONUM)                  /* by value, to match equal? */
+        return fnv1a((const unsigned char *)&as_ptr(v)[1], sizeof(double), FNV_BASIS);
       return (uintptr_t)ext_hdr(v);
     default: return (uintptr_t)v;                    /* closures/boxes: by identity word */
   }
@@ -757,8 +879,36 @@ val rt_mv_to_list(val v) { return as_ptr(v)[1]; }
  * they are kept as distinct names for forward compatibility. */
 val rt_symbol_p(val v)  { return truthy(tag_of(v) == TAG_SYMBOL); }
 val rt_boolean_p(val v) { return truthy(is_bool(v)); }
-val rt_integer_p(val v) { return truthy(tag_of(v) == TAG_FIXNUM); }
+/* Two number types now exist (change: inexact-numbers): exact? is fixnum-only,
+ * inexact?/flonum? are flonum-only, number?/real? are either, and integer? spans
+ * fixnums and integral-valued flonums (3.0 but not 2.5). */
+val rt_integer_p(val v) {
+  if (tag_of(v) == TAG_FIXNUM) return TRUE_V;
+  if (is_flonum(v)) { double d = flo_val(v); return truthy(isfinite(d) && d == floor(d)); }
+  return FALSE_V;
+}
 val rt_exact_p(val v)   { return truthy(tag_of(v) == TAG_FIXNUM); }
+val rt_inexact_p(val v) { return truthy(is_flonum(v)); }
+val rt_flonum_p(val v)  { return truthy(is_flonum(v)); }
+val rt_number_p(val v)  { return truthy(is_number(v)); }
+val rt_real_p(val v)    { return truthy(is_number(v)); }
+/* exact->inexact: fixnum -> flonum (flonum unchanged).  inexact->exact:
+ * integral flonum -> fixnum (fixnum unchanged); a non-integral flonum traps,
+ * since there are no exact rationals. */
+val rt_exact_to_inexact(val v) {
+  if (tag_of(v) == TAG_FIXNUM) return rt_make_flonum((double)UNFIX(v));
+  if (is_flonum(v)) return v;
+  rt_fatal("exact->inexact: not a number"); return NIL_V;
+}
+val rt_inexact_to_exact(val v) {
+  if (tag_of(v) == TAG_FIXNUM) return v;
+  if (is_flonum(v)) {
+    double d = flo_val(v);
+    if (isfinite(d) && d == floor(d)) return FIX((intptr_t)d);
+    rt_fatal("inexact->exact: not an integer"); return NIL_V;
+  }
+  rt_fatal("inexact->exact: not a number"); return NIL_V;
+}
 val rt_string_p(val v)  { return truthy(tag_of(v) == TAG_EXT && ext_hdr(v) == HDR_STRING); }
 val rt_char_p(val v)    { return truthy(is_char(v)); }
 
@@ -790,6 +940,8 @@ val rt_equal(val a, val b) {
       if (la != bv_len(b)) return FALSE_V;
       return truthy(memcmp(bv_bytes(a), bv_bytes(b), (size_t)la) == 0);
     }
+    if (ext_hdr(a) == HDR_FLONUM && ext_hdr(b) == HDR_FLONUM)
+      return truthy(flo_val(a) == flo_val(b));   /* equal? on flonums: by value */
   }
   return FALSE_V;
 }
@@ -844,6 +996,11 @@ static void err_write(char *buf, size_t cap, size_t *off, val v) {
           err_put(buf, cap, off, " ", 1);
           err_write(buf, cap, off, as_ptr(cur)[0]);
         }
+        break;
+      }
+      if (ext_hdr(v) == HDR_FLONUM) {
+        char fb[40]; int fn = flonum_format(flo_val(v), fb);
+        err_put(buf, cap, off, fb, (size_t)fn);
         break;
       }
       err_put(buf, cap, off, "#<obj>", 6);
@@ -1016,6 +1173,11 @@ static void print_val(val v, int display) {
           break;
         }
         case HDR_MV:  printf("#<values>"); break;   /* stray bundle: print safely */
+        case HDR_FLONUM: {                          /* inexact real, always with a '.' */
+          char buf[40]; int n = flonum_format(flo_val(v), buf);
+          fwrite(buf, 1, (size_t)n, stdout);
+          break;
+        }
         default: printf("#<ext:%ld>", (long)ext_hdr(v));
       }
       break;

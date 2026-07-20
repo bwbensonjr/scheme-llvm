@@ -258,7 +258,7 @@
                  (exp1 (rewrite-named-let (cadr e) (caddr e) (cdddr e)))
                  `(let ,(map bind-exp (cadr e)) ,@(map exp1 (cddr e))))]
             [(eq? h 'letrec) `(letrec ,(map bind-exp (cadr e)) ,@(map exp1 (cddr e)))]
-            [(memq h '(+ - *)) (expand-arith exp1 h (cdr e))]
+            [(memq h '(+ - * /)) (expand-arith exp1 h (cdr e))]
             [(eq? h 'string-append) (expand-string-append exp1 (cdr e))]
             [(memq h '(= < > <= >= eq? eqv?)) (expand-compare exp1 h (cdr e))]
             [else (map exp1 e)]))))               ; if/begin/set!/apply/primcall/application
@@ -317,6 +317,11 @@
                  [else (fold-arith op xs)])]
       [(-) (cond [(null? xs) (error 'expand "(-) requires at least one argument")]
                  [(null? (cdr xs)) `(- 0 ,(car xs))]
+                 [else (fold-arith op xs)])]
+      ;; `/` mirrors `-`: `(/ a)` is the reciprocal `(/ 1 a)`, `(/ a b ...)` folds
+      ;; left; `(/)` is an error.  (change: inexact-numbers)
+      [(/) (cond [(null? xs) (error 'expand "(/) requires at least one argument")]
+                 [(null? (cdr xs)) `(/ 1 ,(car xs))]
                  [else (fold-arith op xs)])])))
 
 (define (fold-arith op xs)

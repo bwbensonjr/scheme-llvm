@@ -137,12 +137,28 @@
             [t  (fresh-temp)])
        (emit! (string-append t " = call i64 @rt_cons(i64 " a ", i64 " dd ")"))
        t)]
+    ;; inexact real (flonum) literal (change: inexact-numbers): emit its shortest
+    ;; round-trippable decimal as a C string constant and rebuild the flonum at
+    ;; runtime with rt_flonum_lit (strtod, correctly rounded -> the same double).
+    ;; number->string round-trips under both the Chez host and Emit.  Placed after
+    ;; the exact/char/symbol/string/pair clauses; an integral flonum (3.0) reaches
+    ;; here because it fails clause 1's exact? test.
+    [(and (real? d) (not (exact? d)))
+     (let* ([g+len (emit-cstring-global "@.flo.lit." (number->string d))]
+            [g (car g+len)] [t (fresh-temp)])
+       (emit! (string-append t " = call i64 @rt_flonum_lit(ptr " g ")"))
+       t)]
     [else (error 'emit "bad const" d)]))
 
 (define prim-table
-  '((%+ "rt_add") (%- "rt_sub") (%* "rt_mul")
-    (%quotient "rt_quotient") (%remainder "rt_remainder")
+  '((%+ "rt_add") (%- "rt_sub") (%* "rt_mul") (%/ "rt_div")
+    (%quotient "rt_quotient") (%remainder "rt_remainder") (%modulo "rt_modulo")
     (%= "rt_num_eq") (%< "rt_lt")
+    (%flonum? "rt_flonum_p") (%number? "rt_number_p") (%real? "rt_real_p")
+    (%inexact? "rt_inexact_p") (%exact->inexact "rt_exact_to_inexact")
+    (%inexact->exact "rt_inexact_to_exact")
+    (%string->flonum "rt_string_to_flonum") (%flonum->string "rt_flonum_to_string")
+    (%write-char "rt_write_char")
     (%cons "rt_cons") (%car "rt_car") (%cdr "rt_cdr")
     (%null? "rt_null_p") (%pair? "rt_pair_p") (%eq? "rt_eq_p")
     (%eqv? "rt_eqv_p") (%equal? "rt_equal") (%not "rt_not")
@@ -588,10 +604,22 @@
    "declare i64 @rt_add(i64, i64)\n"
    "declare i64 @rt_sub(i64, i64)\n"
    "declare i64 @rt_mul(i64, i64)\n"
+   "declare i64 @rt_div(i64, i64)\n"
    "declare i64 @rt_quotient(i64, i64)\n"
    "declare i64 @rt_remainder(i64, i64)\n"
+   "declare i64 @rt_modulo(i64, i64)\n"
    "declare i64 @rt_num_eq(i64, i64)\n"
    "declare i64 @rt_lt(i64, i64)\n"
+   "declare i64 @rt_flonum_lit(ptr)\n"
+   "declare i64 @rt_string_to_flonum(i64)\n"
+   "declare i64 @rt_flonum_to_string(i64)\n"
+   "declare i64 @rt_flonum_p(i64)\n"
+   "declare i64 @rt_number_p(i64)\n"
+   "declare i64 @rt_real_p(i64)\n"
+   "declare i64 @rt_inexact_p(i64)\n"
+   "declare i64 @rt_exact_to_inexact(i64)\n"
+   "declare i64 @rt_inexact_to_exact(i64)\n"
+   "declare i64 @rt_write_char(i64)\n"
    "declare i64 @rt_null_p(i64)\n"
    "declare i64 @rt_pair_p(i64)\n"
    "declare i64 @rt_eq_p(i64, i64)\n"

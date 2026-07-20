@@ -61,6 +61,19 @@ check_fail () {  # name  source   -- expects a clean compile but a non-zero run
   fi
 }
 
+check_file () {  # name  source  expected-file  -- compare stdout to a committed file
+  local name="$1" src="$2" expfile="$3"
+  compile_and_run "$name" "$src"; local rc=$?
+  if [ "$rc" -eq "$CE" ]; then
+    echo "  [FAIL] $name  (compile error)"; sed 's/^/         /' "$TMP/$name.err"; fail=$((fail+1)); return
+  fi
+  if diff -q "$expfile" "$TMP/$name.out" >/dev/null 2>&1; then
+    echo "  [OK  ] $name => matches $expfile ($(wc -l < "$expfile" | tr -d ' ') lines)"; pass=$((pass+1))
+  else
+    echo "  [FAIL] $name => stdout differs from $expfile"; diff "$expfile" "$TMP/$name.out" | head -6 | sed 's/^/         /'; fail=$((fail+1))
+  fi
+}
+
 # The Chez-free default needs the shipped runner (links committed IR; no Chez).
 [ "$RUNNER" = aot ] || make emit >/dev/null 2>&1 || { echo "failed to build emit"; exit 1; }
 
@@ -148,6 +161,14 @@ check qqplain demos/qq-plain.scm   '(a b c)'    # quasiquote, no unquotes -> con
 check qqnest  demos/qq-nested.scm  a            # nested quasiquote left intact
 check hiarity demos/high-arity-nontail.scm 130  # K>=6: caller args survive non-tail calls (fastcc)
 check mapmulti demos/map-multi-list.scm '(11 22 33)'  # variadic multi-list map (self-host closure path)
+
+echo "inexact numbers demos"
+check flonumarith demos/flonum-arith.scm '(3.0 1.0 4.0 3.5 2 2.5 #t #t #t)'  # flonum literals, mixed-arith contagion, real division, tower comparison
+check flonumpred  demos/flonum-predicates.scm '(#t #f #f #t #t #f #t #t #t 3.0 3 #t #f)'  # exact?/inexact?/integer?/number?/flonum? + exact<->inexact + eqv? by value
+check modulo      demos/modulo.scm '(2 0 2 -2 -1)'  # flooring modulo (divisor sign) vs truncating remainder
+check doloop      demos/do-loop.scm '(10 5 4)'  # R7RS do: parallel bindings, no-step binding, body command
+check writechar   demos/write-char.scm "$(printf 'hi \316\273\ndone')"  # write-char UTF-8 bytes (incl. 2-byte λ) + final value
+check_file mandelbrot demos/mandelbrot.scm demos/mandelbrot.expected  # ASCII Mandelbrot: float loops, /, write-char, do -- byte-identical on both backends
 
 echo "-------------------------------------------"
 echo "$pass passed, $fail failed"

@@ -20,8 +20,8 @@
 ;; stay reserved: the %-ops (hashing, records, error plumbing, `%no-prelude?`) and the
 ;; REPL state ops (`repl-mode`/`repl-input`/`repl-state-ref`/`repl-state-set!`) --
 ;; never used as values, and the raw %-ops staying internal is a Non-Goal to relax.
-(define *prims* '(%+ %- %* %= %< %eq? %eqv?
-                  %cons %quotient %remainder %car %cdr %null? %pair? %equal? %not
+(define *prims* '(%+ %- %* %/ %= %< %eq? %eqv?
+                  %cons %quotient %remainder %modulo %car %cdr %null? %pair? %equal? %not
                   %char->integer %integer->char
                   %string-length %string-ref %string->symbol %symbol->string %list->string
                   %string-set! %substring %string=? %make-string %string-copy
@@ -30,7 +30,9 @@
                   %bytevector-u8-ref %bytevector-u8-set! %bytevector-length %bytevector?
                   %make-bytevector
                   %symbol? %string? %char? %boolean? %integer? %exact?
-                  %read-all-stdin %display %write %newline
+                  %flonum? %number? %real? %inexact? %exact->inexact %inexact->exact
+                  %string->flonum %flonum->string
+                  %read-all-stdin %display %write %write-char %newline
                   %hash %make-hash-table %hash-table? %hash-table-spine
                   %make-record-type %make-record %record-ref %record-set! %record-of-type? %record?
                   %list->mv %mv? %mv->list
@@ -71,11 +73,17 @@
     ;; (`(apply + ns)`), so their eta is a self-contained rest-param fold over raw
     ;; primcalls (see fold-eta) -- no prelude dependency, works under --no-prelude.
     ;; `eq?`/`eqv?` are binary in R7RS, so they keep the plain binary eta.
-    (+ %+ 2 sum) (- %- 2 diff) (* %* 2 product) (= %= 2 cmp) (< %< 2 cmp)
+    (+ %+ 2 sum) (- %- 2 diff) (* %* 2 product) (/ %/ 2 quot) (= %= 2 cmp) (< %< 2 cmp)
     (eq? %eq? 2) (eqv? %eqv? 2)
-    (quotient %quotient 2) (remainder %remainder 2)
+    (quotient %quotient 2) (remainder %remainder 2) (modulo %modulo 2)
     (car %car 1) (cdr %cdr 1) (null? %null? 1) (pair? %pair? 1)
     (equal? %equal? 2) (not %not 1)
+    ;; inexact numbers (change: inexact-numbers): flonum predicates/conversions and
+    ;; write-char.  integer?/exact? are unchanged here (only their runtime semantics
+    ;; refine to distinguish flonums).
+    (flonum? %flonum? 1) (number? %number? 1) (real? %real? 1) (inexact? %inexact? 1)
+    (exact->inexact %exact->inexact 1) (inexact->exact %inexact->exact 1)
+    (write-char %write-char 1)
     (char->integer %char->integer 1) (integer->char %integer->char 1)
     (string-length %string-length 1) (string-ref %string-ref 2)
     (string->symbol %string->symbol 1) (symbol->string %symbol->string 1)
@@ -147,6 +155,23 @@
                                                  (primcall %cdr ,rest))))])
                  (call ,loop (primcall %car ,gs) (primcall %cdr ,gs))))))))
 
+;; `/` as a value: `(/ a)` -> `(/ 1 a)` (reciprocal), `(/ a b ...)` divides
+;; left-to-right, `(/)` is degenerate (1).  Mirrors diff-eta with a 1 identity.
+(define (div-eta raw)
+  (let ([gs (fresh-name 'gs)] [loop (fresh-name 'loop)]
+        [acc (fresh-name 'acc)] [rest (fresh-name 'rest)])
+    `(lambda ,gs
+       (if (primcall %null? ,gs)
+           (const 1)
+           (if (primcall %null? (primcall %cdr ,gs))
+               (primcall ,raw (const 1) (primcall %car ,gs))          ; (/ a) -> 1 / a
+               (letrec ([,loop (lambda (,acc ,rest)
+                                 (if (primcall %null? ,rest)
+                                     ,acc
+                                     (call ,loop (primcall ,raw ,acc (primcall %car ,rest))
+                                                 (primcall %cdr ,rest))))])
+                 (call ,loop (primcall %car ,gs) (primcall %cdr ,gs))))))))
+
 ;; `= `/`<` as a value: a short-circuit pairwise chain; 0 or 1 operand -> #t.
 (define (cmp-chain-eta raw)
   (let ([gs (fresh-name 'gs)] [loop (fresh-name 'loop)]
@@ -170,6 +195,7 @@
     [(product) (left-fold-eta raw '(const 1))]
     [(str)     (left-fold-eta raw '(const ""))]
     [(diff)    (diff-eta raw)]
+    [(quot)    (div-eta raw)]
     [(cmp)     (cmp-chain-eta raw)]
     [else (error 'parse "unknown integrable fold kind" kind)]))
 
@@ -256,6 +282,12 @@
         `(apply ,(parse-expr f) ,@(map parse-expr (cons a rest)))]
        [(,op . ,args) (guard (prim? op)) `(primcall ,op ,@(map parse-expr args))]
        [(,f . ,args) `(call ,(parse-expr f) ,@(map parse-expr args))])]
+    ;; inexact real (flonum) literal (change: inexact-numbers).  Placed after the
+    ;; atom/pair clauses so `real?` is only evaluated for a genuine flonum datum --
+    ;; the compiler/prelude sources carry no flonum literals, so this never runs
+    ;; during the bootstrap regen (where the seed lacks `real?`).  An integral
+    ;; flonum (3.0) fails clause 1's `(exact? e)` and lands here too.
+    [(and (real? e) (not (exact? e))) `(const ,e)]
     [else (error 'parse "bad expression" e)]))
 
 (define (parse-bind b) (list (car b) (parse-expr (cadr b))))

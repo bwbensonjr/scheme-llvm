@@ -60,6 +60,28 @@
     ((_ k ((d ...) e ...) clause ...)
      (if (memv k (quote (d ...))) (begin e ...) (case k clause ...)))))
 
+;; R7RS `do`: iterate with parallel-updated bindings.  Each binding is
+;; (var init step) or (var init) [step defaults to var, i.e. unchanged].  On each
+;; pass: if `test` holds, the result exprs run (unspecified value if none);
+;; otherwise the commands run and every var is rebound to its step -- all steps
+;; are evaluated before any rebind because they are the arguments of the loop
+;; call.  %do-step supplies the default step.  (change: inexact-numbers)
+(define-syntax %do-step
+  (syntax-rules ()
+    ((_ x) x)
+    ((_ x s) s)))
+(define-syntax do
+  (syntax-rules ()
+    ((_ ((var init step ...) ...)
+        (test result ...)
+        command ...)
+     (letrec ((loop (lambda (var ...)
+                      (if test
+                          (begin (if #f #f) result ...)
+                          (begin command ...
+                                 (loop (%do-step var step ...) ...))))))
+       (loop init ...)))))
+
 (define (list . xs) xs)
 
 ;;; --- compositional car/cdr accessors (cxr combinators) --------------------
@@ -245,11 +267,18 @@
     (if (= rest 0)
         (cons ch acc)
         (ns-digits rest (cons ch acc)))))
+;;; Flonums route to the runtime formatter (%flonum->string: shortest round-
+;;; trippable decimal, always with a '.').  `exact?` gates it -- exact? is true
+;;; only for fixnums, so the integer path is unchanged; the flonum branch is
+;;; never reached with a fixnum (and so is dead during the bootstrap regen, where
+;;; %flonum->string is not yet a known primcall).  (change: inexact-numbers)
 (define (number->string n)
-  (cond
-    [(= n 0) "0"]
-    [(< n 0) (list->string (cons #\- (ns-digits n (quote ()))))]
-    [else    (list->string (ns-digits (- 0 n) (quote ())))]))
+  (if (exact? n)
+      (cond
+        [(= n 0) "0"]
+        [(< n 0) (list->string (cons #\- (ns-digits n (quote ()))))]
+        [else    (list->string (ns-digits (- 0 n) (quote ())))])
+      (%flonum->string n)))
 
 ;;; --- exceptions: error objects, raise, guard (r7rs-exceptions-subset) ------
 ;;; R7RS `(error message irritant ...)` builds a CATCHABLE error object and raises
@@ -489,10 +518,44 @@
       [(= c0 43) (rd-digits tok 1 m 0)]
       [else (rd-digits tok 0 m 0)])))
 
-(define (rd-atom s n i)                  ; token -> integer or interned symbol
+;;; --- inexact real (flonum) literal recognition (change: inexact-numbers) ----
+;;; A flonum token is  [sign] ( digits [. digits] | . digits ) [exp]  with at
+;;; least one digit AND at least one of a dot or an exponent (a pure-digit token
+;;; is an integer, matched by rd-numeric?).  exp = (e|E) [sign] >=1 digits.  This
+;;; only CLASSIFIES the token; the value parse is the runtime strtod (correctly
+;;; rounded, so it round-trips with the flonum printer) via %string->flonum.
+(define (rd-dotchar? c) (= (char->integer c) 46))                         ; the char .
+(define (rd-exp-char? c) (let ([k (char->integer c)]) (or (= k 101) (= k 69))))  ; e E
+(define (rd-sign-char? c) (let ([k (char->integer c)]) (or (= k 43) (= k 45))))  ; + -
+(define (rd-scan-digits tok a m)         ; index just past a run of >=0 digits
+  (if (and (< a m) (rd-digit? (string-ref tok a))) (rd-scan-digits tok (+ a 1) m) a))
+(define (rd-flonum? tok)
+  (let ([m (string-length tok)])
+    (and (< 0 m)
+      (let ([i0 (if (rd-sign-char? (string-ref tok 0)) 1 0)])
+        (let ([i1 (rd-scan-digits tok i0 m)])            ; past integer digits
+          (let ([i2 (if (and (< i1 m) (rd-dotchar? (string-ref tok i1))) (+ i1 1) i1)])
+            (let ([had-dot (< i1 i2)])
+              (let ([i3 (rd-scan-digits tok i2 m)])       ; past fraction digits
+                (and (or (< i0 i1) (< i2 i3))             ; at least one digit
+                     (let ([i4 (if (and (< i3 m) (rd-exp-char? (string-ref tok i3)))
+                                   (let ([i5 (if (and (< (+ i3 1) m)
+                                                      (rd-sign-char? (string-ref tok (+ i3 1))))
+                                                 (+ i3 2) (+ i3 1))])
+                                     (let ([i6 (rd-scan-digits tok i5 m)])
+                                       (if (< i5 i6) i6 -1)))   ; exponent needs >=1 digit
+                                   i3)])
+                       (and (< -1 i4)                     ; valid (or no) exponent
+                            (= i4 m)                      ; consumed the whole token
+                            (or had-dot (< i3 i4)))))))))))))   ; a dot OR an exponent
+
+(define (rd-atom s n i)                  ; token -> integer, flonum, or interned symbol
   (let ([j (rd-token-end s n i)])
     (let ([tok (substring s i j)])
-      (cons (if (rd-numeric? tok) (rd-parse-int tok) (string->symbol tok)) j))))
+      (cons (cond [(rd-numeric? tok) (rd-parse-int tok)]
+                  [(rd-flonum? tok) (%string->flonum tok)]
+                  [else (string->symbol tok)])
+            j))))
 
 (define (rd-hex-digit c)                 ; hex char -> value (0 for non-hex)
   (let ([k (char->integer c)])
