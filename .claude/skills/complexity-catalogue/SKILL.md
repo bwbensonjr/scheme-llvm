@@ -27,6 +27,12 @@ required.
    `BEGIN/END GENERATED: complexity-catalogue` markers. Note the authored-subtotal and
    full-tree totals it reports on stderr.
 
+   The same run also appends a timestamped snapshot to `docs/complexity-history.csv` — but
+   **only when the metrics changed** from the last recorded snapshot. Watch the stderr for
+   either `record docs/complexity-history.csv [+N rows @ <commit>]` (a snapshot was recorded)
+   or `docs/complexity-history.csv unchanged -> no snapshot recorded` (numbers unchanged, so
+   the history was left alone). This is expected behavior, not an error.
+
 2. **Check for misclassified files.** Look at the generated `By component` table for the
    `other` role or any component that looks wrong (e.g. a new source directory landing in
    `root`/`other`). If found, the fix is a one-line edit to the **classification policy** —
@@ -43,8 +49,10 @@ required.
    authored component that grew substantially, a new large generated/vendored mass, or a file
    that fell into `other`).
 
-5. **Report** the authored subtotal, the full-tree total, and any classification fix you
-   made or any `other`/misclassified file the user should resolve in the policy.
+5. **Report** the authored subtotal, the full-tree total, whether a new history snapshot was
+   recorded (naming `docs/complexity-history.csv` when it was, or noting the metrics were
+   unchanged), and any classification fix you made or any `other`/misclassified file the user
+   should resolve in the policy.
 
 ## Guardrails
 

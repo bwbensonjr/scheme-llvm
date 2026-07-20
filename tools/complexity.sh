@@ -27,6 +27,16 @@ MARK_BEGIN="<!-- BEGIN GENERATED: complexity-catalogue -->"
 MARK_END="<!-- END GENERATED: complexity-catalogue -->"
 REGEN_CMD="make catalogue"   # the command a reader runs to refresh the block
 
+# Metrics-history data file: an append-only, long-format CSV recording the catalogue
+# totals over time.  One snapshot = a group of rows sharing a timestamp+commit, covering
+# the whole-tree total, each role, and each component.  A snapshot is appended (in --write
+# mode) only when the measured metrics differ from the last recorded snapshot, so repeated
+# regenerations against an unchanged tree stay idempotent.  This file is EXCLUDED from the
+# catalogue's own count (see the git-ls-files loop) -- counting a file the tool appends to
+# would be self-referential and would never converge.
+HIST="docs/complexity-history.csv"
+HIST_HEADER="timestamp,commit,dimension,key,files,loc"
+
 WRITE=0
 [ "${1:-}" = "--write" ] && WRITE=1
 
@@ -116,6 +126,10 @@ trap 'rm -f "$TSV"' EXIT
 nfiles=0
 while IFS= read -r -d '' f; do
   [ -f "$f" ] || continue
+  # The tool's own metrics ledger is instrumentation, not catalogued code: counting a file
+  # the tool itself appends to would be self-referential and the history append could never
+  # converge (see the HIST comment above).  It is the sole tracked file excluded from the count.
+  [ "$f" = "$HIST" ] && continue
   IFS=$'\t' read -r role comp lang < <(classify "$f")
   lines=$(wc -l < "$f" | tr -d ' ')
   printf '%s\t%s\t%s\t%s\t%s\n' "$role" "$comp" "$lang" "$lines" "$f" >> "$TSV"
@@ -265,4 +279,45 @@ if cmp -s "$NEWDOC" "$DOC"; then
 else
   cat "$NEWDOC" > "$DOC"
   say "regen $DOC  [$(bytes "$DOC") bytes]"
+fi
+
+# ===========================================================================
+# --write: append a metrics snapshot to the history CSV, but only when the
+# measured metrics differ from the last recorded snapshot (change-gated, so an
+# unchanged tree records nothing and the tool stays idempotent).  Reuses the same
+# per-file TSV the tables were built from -- no second classification path.
+# ===========================================================================
+CAND="$(mktemp)"; PREV="$(mktemp)"
+trap 'rm -f "$TSV" "$BLOCK" "$NEWDOC" "$CAND" "$PREV"' EXIT
+
+# Candidate snapshot data rows: "dimension,key,files,loc", sorted so the comparison
+# and the appended order are order-independent and stable.
+awk -F'\t' '
+  { tf++; tl += $4; rf[$1]++; rl[$1] += $4; cf[$2]++; cl[$2] += $4 }
+  END {
+    printf "total,ALL,%d,%d\n", tf, tl
+    for (r in rl) printf "role,%s,%d,%d\n", r, rf[r], rl[r]
+    for (c in cl) printf "component,%s,%d,%d\n", c, cf[c], cl[c]
+  }' "$TSV" | sort > "$CAND"
+
+# Last recorded snapshot: the group of rows sharing the final data line's timestamp,
+# reduced to the same "dimension,key,files,loc" shape and sorted.  Empty if the history
+# file is absent or header-only.
+if [ -f "$HIST" ]; then
+  last_ts="$(awk -F, 'NR>1 { ts=$1 } END { print ts }' "$HIST")"
+  [ -n "$last_ts" ] && awk -F, -v ts="$last_ts" \
+    'NR>1 && $1==ts { print $3","$4","$5","$6 }' "$HIST" | sort > "$PREV"
+fi
+
+if [ -s "$PREV" ] && cmp -s "$CAND" "$PREV"; then
+  say "$HIST unchanged -> no snapshot recorded"
+else
+  ts="$(date +%Y-%m-%dT%H:%M:%S%z)"
+  commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  [ -f "$HIST" ] || printf '%s\n' "$HIST_HEADER" > "$HIST"
+  while IFS= read -r row; do
+    printf '%s,%s,%s\n' "$ts" "$commit" "$row" >> "$HIST"
+  done < "$CAND"
+  nrows="$(wc -l < "$CAND" | tr -d ' ')"
+  say "record $HIST  [+$nrows rows @ $commit]"
 fi
